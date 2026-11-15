@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; form-action 'none'">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title data-i18n>设置资料库</title>
+<style>
+  :root { color-scheme: dark; font: 15px/1.5 Inter, "Segoe UI", "Microsoft YaHei", sans-serif; background: #1e1e1e; color: #ededed; }
+  body { margin: 0; }
+  main { padding: 30px 32px 24px; }
+  h1 { margin: 0 0 22px; font-size: 25px; }
+  label { display: block; }
+  .location { display: flex; gap: 8px; margin: 6px 0; }
+  .location input { flex: 1; min-width: 0; padding: 8px 10px; border: 1px solid #444; border-radius: 6px; background: #252525; color: inherit; font: inherit; }
+  p { margin: 0; color: #aaa; font-size: 13px; }
+  fieldset { border: 0; margin: 20px 0 4px; padding: 0; }
+  fieldset label { margin-bottom: 9px; }
+  input[type=checkbox] { margin: 0 8px 0 0; accent-color: #9b78ef; }
+  #error { color: #ffabab; min-height: 20px; }
+  footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+  button { background: #333; color: inherit; border: 1px solid #444; border-radius: 6px; padding: 7px 14px; font: inherit; cursor: pointer; }
+  button:hover { background: #3d3d3d; }
+  button[type=submit] { background: #8152d9; border-color: #8152d9; }
+  button[type=submit]:hover { background: #9167e2; }
+  button:disabled { opacity: .6; cursor: default; }
+  :focus-visible { outline: 2px solid #ab8afb; outline-offset: 2px; }
+</style>
+<main>
+  <h1 data-i18n>设置资料库</h1>
+  <form>
+    <label data-i18n for="library-path">资料库位置</label>
+    <div class="location">
+      <input id="library-path" required spellcheck="false">
+      <button data-i18n type="button" id="choose">选择文件夹</button>
+    </div>
+    <p data-i18n>可以新建资料库，也可以打开已有的 Kasaneri 资料库。</p>
+    <fieldset data-i18n-attrs="aria-label" aria-label="新资料库设置">
+      <label><input id="backup" type="checkbox" checked><span data-i18n>自动备份新资料库</span></label>
+      <label><input id="sync" type="checkbox"><span data-i18n>启用新资料库的桌面同步</span></label>
+      <p data-i18n>打开已有库会沿用其设置。新库的对端可稍后在同步设置中添加。</p>
+    </fieldset>
+    <p id="error" role="alert"></p>
+    <footer>
+      <button data-i18n type="button" id="cancel">退出</button>
+      <button data-i18n type="submit">打开资料库</button>
+    </footer>
+  </form>
+</main>
+</html>

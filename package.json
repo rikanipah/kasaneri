@@ -1,0 +1,38 @@
+{
+  "name": "kasaneri",
+  "productName": "Kasaneri",
+  "version": "1.211.0",
+  "private": true,
+  "description": "Kasaneri desktop workspace",
+  "main": "dist/main.cjs",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "package:windows": "node scripts/package.mjs",
+    "package:linux": "node scripts/package-linux.mjs"
+  },
+  "dependencies": {
+    "@codemirror/commands": "^6.11.1",
+    "@codemirror/lang-markdown": "^6.5.2",
+    "@codemirror/language": "^6.13.1",
+    "@codemirror/state": "^6.7.6",
+    "@codemirror/view": "^6.43.15",
+    "@homebridge/node-pty-prebuilt-multiarch": "0.15.0",
+    "@lezer/highlight": "^1.2.5",
+    "@open-spaced-repetition/binding": "0.6.0",
+    "@types/katex": "^0.16.8",
+    "@types/markdown-it": "^14.2.0",
+    "@types/node": "^26.6.6",
+    "@xterm/addon-fit": "0.11.0",
+    "@xterm/xterm": "6.0.0",
+    "dompurify": "^3.4.17",
+    "electron": "^45.2.3",
+    "esbuild": "^0.28.2",
+    "katex": "^0.19.1",
+    "markdown-it": "^15.0.3",
+    "sharp": "^0.35.5",
+    "ts-fsrs": "6.0.0",
+    "typescript": "^7.0.2",
+    "yaml": "^2.9.1"
+  },
+  "license": "MIT"
+}

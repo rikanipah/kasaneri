@@ -1,0 +1,15 @@
+import {cpSync,mkdirSync,renameSync,chmodSync,existsSync} from 'node:fs';
+import {resolve,join} from 'node:path';
+import {execFileSync} from 'node:child_process';
+import {copyNativeDependencies} from './native-dependencies.mjs';
+import {copyLicenses} from './licenses.mjs';
+import {copyApplication,productName} from './application-files.mjs';
+if(process.platform!=='linux')throw Error('请在 Linux 上执行 npm ci、npm run build、npm run package:linux。');
+if(!existsSync('node_modules/electron/dist/electron'))execFileSync(process.execPath,['node_modules/electron/install.js'],{stdio:'inherit'});
+const output=resolve('release',productName+'-Linux');mkdirSync(output,{recursive:true});
+cpSync('node_modules/electron/dist',output,{recursive:true});
+const app=join(output,'resources/app');copyApplication(app);
+copyNativeDependencies(app);
+copyLicenses(join(output,'licenses'));
+renameSync(join(output,'electron'),join(output,productName));chmodSync(join(output,productName),0o755);
+console.log('Linux program: '+join(output,productName));

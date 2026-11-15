@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' reading-asset: data: https:; media-src reading-asset:; connect-src 'self'; object-src 'none'">
+<title>Kasaneri</title>
+<link rel="stylesheet" href="katex/katex.min.css">
+<link rel="stylesheet" href="xterm/xterm.css">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header id="topbar"><nav data-i18n-attrs="aria-label" id="breadcrumbs" aria-label="材料路径"></nav>
+<div id="window-buttons"><button data-i18n-attrs="aria-label" id="minimize" aria-label="最小化"></button><button data-i18n-attrs="aria-label" id="maximize" aria-label="最大化或还原"></button><button data-i18n-attrs="aria-label" id="close" aria-label="关闭"></button></div></header>
+<aside id="sidebar">
+<div id="directory-pane">
+<section id="directory-tree-pane" aria-labelledby="directory-heading">
+  <div class="directory-header"><span data-i18n id="directory-heading">目录树</span><div data-i18n-attrs="aria-label" id="directory-filters" role="group" aria-label="按卡片类型筛选目录"><button data-i18n-attrs="aria-label title" data-type="topic" aria-label="只显示主题" aria-pressed="false" title="主题"></button><button data-i18n-attrs="aria-label title" data-type="material" aria-label="只显示提取及其父级" aria-pressed="false" title="提取及其父级"></button><button data-i18n-attrs="aria-label title" data-type="cloze" aria-label="只显示检测卡及其父级" aria-pressed="false" title="检测卡及其父级"></button></div></div>
+  <div id="tree-viewport"><div id="tree" tabindex="-1"></div></div>
+</section>
+<details id="card-relations" open hidden>
+  <summary data-i18n>记忆树</summary>
+  <div class="relation-panel">
+    <ul data-i18n-attrs="aria-label" id="memory-tree" class="relation-tree" aria-label="记忆关系"></ul>
+  </div>
+</details></div>
+<nav data-i18n-attrs="aria-label" id="action-rail" aria-label="功能栏">
+<button data-i18n-attrs="aria-label title" id="toggle-directory" aria-label="收起目录树" title="目录树" aria-expanded="true" aria-controls="directory-pane"></button>
+<button data-i18n-attrs="aria-label title" id="toggle-review" aria-label="进入复习" title="复习" aria-pressed="false"></button>
+<button data-i18n-attrs="aria-label title" id="toggle-reading" aria-label="进入待办" title="待办" aria-pressed="false"></button>
+<button data-i18n-attrs="aria-label title" id="open-browser" aria-label="浏览卡片" title="浏览卡片" aria-pressed="false"></button>
+<button data-i18n-attrs="aria-label title" id="open-add-card" aria-label="添加卡片" title="添加卡片"></button>
+<button data-i18n-attrs="aria-label title" id="open-statistics" aria-label="统计" title="统计"><svg class="lucide" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 3v17h17M8 16v-5m5 5V6m5 10V8"/></svg></button>
+<button data-i18n-attrs="aria-label title" id="open-trash" aria-label="垃圾桶" title="垃圾桶"><svg class="lucide" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13M10 11v5M14 11v5"/></svg></button>
+<button data-i18n-attrs="aria-label title" id="open-shortcuts" aria-label="修改快捷键" title="快捷键"></button>
+<button data-i18n-attrs="aria-label title" id="open-settings" aria-label="打开设置" title="设置"></button>
+</nav>
+</aside>
+<div data-i18n-attrs="aria-label" id="resize" role="separator" aria-label="调整目录宽度"></div>
+<main>
+<div id="notice" role="alert" hidden></div>
+<div id="main-body"><nav data-i18n-attrs="aria-label" id="browser-filters" aria-label="浏览筛选" hidden></nav><div id="editor-stack">
+<section data-i18n-attrs="aria-label" id="card-browser" aria-label="卡片浏览器" hidden></section>
+<div data-i18n-attrs="aria-label" id="browser-rule" role="separator" aria-label="调整浏览列表和编辑区的高度" aria-orientation="horizontal" tabindex="0" hidden></div>
+<div id="workspace"><div data-i18n class="empty">正在打开资料库…</div></div>
+<section data-i18n-attrs="aria-label" id="study-controls" aria-label="复习操作" hidden>
+<div id="study-status-text" class="sr-only" aria-live="polite"></div>
+<div class="study-bottom-row">
+<div class="study-side study-left"><div data-i18n-attrs="aria-label" id="highlight-controls" role="group" aria-label="摘录高亮"><button data-i18n-attrs="title aria-label" data-highlight="extract" title="摘录高亮" aria-label="摘录高亮" aria-pressed="true"></button><button data-i18n-attrs="title aria-label" data-highlight="cloze" title="检测高亮" aria-label="检测高亮" aria-pressed="true"></button><button data-i18n-attrs="title aria-label" data-highlight="all" title="全部高亮开关" aria-label="全部高亮开关" aria-pressed="true"></button></div><button data-i18n id="study-edit" class="study-action" hidden>编辑</button></div>
+<div class="study-center"><div id="study-counts"></div><div id="study-buttons"></div></div>
+<div class="study-side study-right"><button data-i18n data-i18n-attrs="title" id="card-tags" class="study-action" title="卡片属性（可检索）">卡片属性</button><div id="card-tags-panel" hidden><div id="card-tags-list"></div><input data-i18n-attrs="placeholder aria-label" id="card-tags-input" placeholder="输入属性后回车" aria-label="新增卡片属性"></div><button data-i18n data-i18n-attrs="title" id="study-priority" class="study-action" title="设置当前材料的优先级（1 高 / 9 低 / 0 绝对优先）" hidden>优先级</button><button data-i18n id="study-more" class="study-action" aria-haspopup="menu" aria-expanded="false">更多⌄</button>
+<div id="study-more-menu" role="menu" hidden><button data-i18n data-i18n-attrs="title" id="study-bury" role="menuitem" title="搁置到下一个日切点，明天重新出现（快捷键 =）">搁置</button><button data-i18n data-i18n-attrs="title" id="study-pause-review" role="menuitem" hidden title="暂停复习，卡片进入待办继续读">待办暂停</button><button data-i18n data-i18n-attrs="title" id="study-pause" role="menuitem" hidden title="不确定要不要留在 IR 时先收进暂存点，可稍后在浏览卡片取消或删除">留存判定</button><button data-i18n id="study-undo" role="menuitem">撤销上次</button><button data-i18n id="study-browse" role="menuitem">浏览卡片</button></div></div>
+</div>
+</section>
+</div></div>
+</main>
+<div id="context-menu" role="menu" hidden></div>
+<dialog id="image-occlusion" aria-labelledby="image-occlusion-title"><form method="dialog">
+  <h3 data-i18n id="image-occlusion-title">图片遮挡</h3>
+  <p data-i18n class="preference-hint">拖动画框，按住 Shift 可重叠。选中后可移动，拖右下角可调大小。</p>
+  <div class="occlusion-layout">
+    <div class="occlusion-stage">
+      <div class="occlusion-canvas"><img alt="" draggable="false"><div class="occlusion-regions" aria-hidden="true"></div></div>
+    </div>
+    <div data-i18n-attrs="aria-label" class="occlusion-list" aria-label="遮挡区域" role="group"></div>
+  </div>
+  <div class="dialog-actions">
+    <button data-i18n type="button" class="occlusion-undo">撤销</button>
+    <button data-i18n data-i18n-attrs="title" type="button" class="occlusion-remove" title="从原图移除所选框，保留已生成的检测卡">移除框</button>
+    <button data-i18n value="cancel" autofocus>取消</button><button data-i18n value="save" class="primary">生成检测卡</button>
+  </div>
+</form></dialog>
+<dialog id="prompt"><form method="dialog"><h3 id="prompt-title"></h3><p id="prompt-text" hidden></p><input id="prompt-input" autocomplete="off" spellcheck="false"><div class="dialog-actions"><button data-i18n value="cancel">取消</button><button data-i18n id="prompt-accept" value="accept" class="primary">确定</button></div></form></dialog>
+<dialog id="switcher"><div class="switcher-inner"><input data-i18n-attrs="placeholder" id="search-input" placeholder="查找材料" autocomplete="off"><div id="search-results"></div></div></dialog>
+<dialog data-i18n-attrs="aria-label" id="relation-picker" aria-label="关联卡片"><input data-i18n-attrs="aria-label placeholder" type="search" aria-label="查找要关联的卡片" placeholder="输入卡片名，或用 / 逐级筛选" autocomplete="off"><div class="relation-results"></div><form method="dialog" class="dialog-actions"><button data-i18n>取消</button></form></dialog>
+<script src="renderer.js"></script>
+<div id="card-state-badge" hidden></div>
+</body>
+</html>

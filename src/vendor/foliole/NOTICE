@@ -1,0 +1,18 @@
+Foliole queue components
+
+Source: https://github.com/campfirium/foliole
+Revision: 3a8bc69d54921faf8f0ad6e915dcfa091ace47a7 (Foliole 0.7.17)
+License: Apache License, Version 2.0 (see LICENSE in this directory).
+
+The following TypeScript files are copied from Foliole's source and retain
+their original implementation:
+  unifiedPushQueueRules.ts
+  unifiedPushQueueAssembler.ts
+  readingMaterialDispersion.ts
+  hierarchicalMaterialInterleave.ts
+  balancedMaterialMerge.ts
+  materialInterleaveHeap.ts
+
+Integration is in ../../study/study.ts. The application assembles separate
+reading and FSRS queues from bounded SQLite candidate batches and uses its
+own storage and scheduling actions.

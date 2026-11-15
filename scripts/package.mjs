@@ -1,0 +1,18 @@
+import {cpSync,mkdirSync,renameSync,readdirSync,realpathSync} from 'node:fs';
+import {resolve,join} from 'node:path';
+import {copyNativeDependencies} from './native-dependencies.mjs';
+import {copyLicenses} from './licenses.mjs';
+import {writeWindowsChecksums} from './windows-checksums.mjs';
+import {copyApplication,productName} from './application-files.mjs';
+const output=resolve(process.argv[2]||join('release',productName+'-Windows'));
+mkdirSync(output,{recursive:true});
+if(readdirSync(output).length)throw Error('请选择空的发布目录：'+output);
+cpSync(realpathSync('node_modules/electron/dist'),output,{recursive:true});
+const app=join(output,'resources','app');
+copyApplication(app);
+copyNativeDependencies(app);
+copyLicenses(join(output,'licenses'));
+const exe=join(output,productName+'.exe');
+renameSync(join(output,'electron.exe'),exe);
+await writeWindowsChecksums(output);
+console.log('Packaged '+output);

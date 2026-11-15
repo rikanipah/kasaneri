@@ -1,0 +1,14 @@
+node_modules/
+/dist/
+/release/
+/test-data/
+/data/
+/state/
+/backups/
+/installer/
+/.electron-cache/
+*.log
+*.exe
+*.sqlite*
+.DS_Store
+Thumbs.db
