@@ -23,9 +23,7 @@ Review and To-do have separate schedules. To-do brings back topics so you can re
 1. Suspended cards in Anki often pile up. I wanted a SuperMemo-style queue that brings those cards back for me to revise.
 2. Some cards make sense only after you understand their prerequisites. For example, the Van ’t Hoff equation needs both chemistry and calculus.
 
-   $$
-   \left( \dfrac{\partial \ln K^\ominus(T)}{\partial T} \right)_p = \dfrac{\Delta_r H^\ominus}{RT^2}
-   $$
+   $\displaystyle \left( \dfrac{\partial \ln K^\ominus(T)}{\partial T} \right)_p = \dfrac{\Delta_r H^\ominus}{RT^2}$
 
    You need to understand the chemical meaning of $K^{\ominus}(T)$, $R$, and $\Delta_r H^{\ominus}$, as well as what a derivative means. Memorizing the formula without that background is less effective.
 3. I like the Markdown workflow in Obsidian. Electron also makes the workspace easy to customize.

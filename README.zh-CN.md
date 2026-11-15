@@ -28,9 +28,7 @@ Kasaneri的编辑界面基于Electron，简洁美观。
 
 2. 参考渐进阅读，某些卡片要先掌握逻辑前提才能够理解。比如（卡片 A）范特霍夫等压方程式
 
-   $$
-   \left( \dfrac{\partial \ln K^\ominus(T)}{\partial T} \right)_p = \dfrac{\Delta_r H^\ominus}{RT^2}
-   $$
+   $\displaystyle \left( \dfrac{\partial \ln K^\ominus(T)}{\partial T} \right)_p = \dfrac{\Delta_r H^\ominus}{RT^2}$
 
    既需要理解化学上 $K^{\ominus}(T),\ R,\ \Delta_{r}H^{\ominus}$ 的意思（相近领域的 A1、A2、A3），也需要理解数学上微分的含义（较远领域的B1）。如果逻辑前提意味上的知识没掌握，尽管可以临摹记忆公式，但效率也不是很高。
 
