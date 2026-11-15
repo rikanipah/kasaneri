@@ -1,6 +1,10 @@
+### English | [简体中文](README.zh-CN.md)
+
+---
+
 # Kasaneri
 
-[简体中文](README.zh-CN.md) · [Code and build instructions](CODE.md)
+[Code and build instructions](CODE.md)
 
 > **Kasaneri is a personal experiment. I wrote much of it through vibe coding with models including ChatGPT and DeepSeek.**
 >

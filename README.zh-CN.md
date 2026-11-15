@@ -1,3 +1,7 @@
+### [English](README.md) | 简体中文
+
+---
+
 # Kasaneri
 
 # 注意
