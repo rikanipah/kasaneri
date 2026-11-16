@@ -55,8 +55,6 @@ cd Kasaneri-Linux
 ./run-linux.sh
 ```
 
-On Arch Linux, once the package is listed on the AUR, install it with `yay -S kasaneri-bin`. Start it from the application menu or run `kasaneri`. Use `yay -Syu` for updates.
-
 ## Review
 
 Kasaneri uses [ts-fsrs](https://github.com/open-spaced-repetition/ts-fsrs) with FSRS-6 and FSRS-7. Parameter optimization uses [@open-spaced-repetition/binding](https://github.com/open-spaced-repetition/ts-fsrs/tree/main/packages/binding).

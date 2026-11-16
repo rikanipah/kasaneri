@@ -123,8 +123,6 @@ cd Kasaneri-Linux
 ./run-linux.sh
 ```
 
-上架 AUR 后，Arch Linux 可用 `yay -S kasaneri-bin` 安装。从应用菜单打开 Kasaneri，或在终端运行 `kasaneri`。以后用 `yay -Syu` 更新。
-
 ## 其它
 
 ### 编辑
