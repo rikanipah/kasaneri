@@ -1,4 +1,5 @@
 import { t } from '../core/i18n';
+import { bindTreeFilters,bindTreeSort,sortTreeRows,TreeSelection,updateTreeFilters,updateTreeToggle,type TreeSort,type TreeType } from './tree-controls';
 import type {CardRelationCandidate,CardRelationKey,MemoryTreeCard,MemoryTreeLink,MemoryTreeSnapshot} from '../core/model';
 
 interface Actions {
@@ -13,10 +14,16 @@ export class CardRelationsPanel {
   private readonly tree:HTMLUListElement;
   private readonly heading:HTMLElement;
   private roots:string[]=[];
+  private readonly selection=new TreeSelection();
+  private readonly expandButton:HTMLButtonElement;
+  private readonly filters:HTMLElement;
+  private types:TreeType[]=[];
+  private sort:TreeSort='position';
+  private displayed=new Map<string,MemoryTreeCard>();
   private cards=new Map<string,MemoryTreeCard>();
   /** 忽略当前卡的路径标识，只比较已经显示的树结构和内容。 */
   private signature='';
-  // 1.207：内容默认展开；这里只记用户手动收起的节点，跨卡片保持并持久化。
+  // 内容默认展开；这里只记用户手动收起的节点，跨卡片保持并持久化。
   private readonly collapsed=new Set<string>();
   private readonly input:HTMLInputElement;
   private readonly results:HTMLElement;
@@ -29,9 +36,30 @@ export class CardRelationsPanel {
     private readonly actions:Actions){
     this.tree=host.querySelector('#memory-tree')!;
     this.heading=host.querySelector('summary')!;
+    this.expandButton=host.querySelector('#memory-toggle-all')!;
+    this.filters=host.querySelector('#memory-filters')!;
+    this.expandButton.onclick=event=>{
+      event.preventDefault();
+      const expand=!this.host.open||!this.hasExpandedBranches();
+      if(expand)this.host.open=true;
+      this.setAllExpanded(expand);
+    };
+    host.addEventListener('toggle',()=>this.updateExpandButton());
+    try{
+      const saved:unknown=JSON.parse(localStorage.getItem('ir.memoryTree.types')??'[]');
+      if(Array.isArray(saved))this.types=saved.filter(type=>['topic','material','cloze'].includes(type));
+    }catch{}
+    updateTreeFilters(this.filters,this.types);
+    bindTreeFilters(this.filters,type=>{
+      this.types=this.types.includes(type)?this.types.filter(value=>value!==type):[...this.types,type];
+      updateTreeFilters(this.filters,this.types);
+      try{localStorage.setItem('ir.memoryTree.types',JSON.stringify(this.types));}catch{}
+      this.renderTree();
+    });
+    bindTreeSort(host.querySelector('#memory-sort')!,'ir.memoryTree.sort',sort=>{this.sort=sort;this.renderTree();});
     this.input=picker.querySelector('input')!;
     this.results=picker.querySelector('.relation-results')!;
-    // 1.195：记忆树空白处右键不做任何事（建子卡片要右键某张卡片作为父级）。
+    // 记忆树空白处右键不做任何事（建子卡片要右键某张卡片作为父级）。
     try{const saved=JSON.parse(localStorage.getItem('ir.memoryTree.collapsed')||'[]');if(Array.isArray(saved))for(const value of saved)if(typeof value==='string')this.collapsed.add(value);}catch{}
     this.tree.addEventListener('contextmenu',event=>{
       if((event.target as HTMLElement).closest('.tree-row'))return;
@@ -46,48 +74,106 @@ export class CardRelationsPanel {
     if(version!==this.showVersion)return;
     const changed=id!==this.cardId;
     const scrollTop=this.host.scrollTop;
+    const wasSelected=this.selection.includes(id)&&this.selection.anchor===id;
+    if(changed&&!wasSelected)this.selection.select(id);
     const sameTree=roots.length===this.roots.length&&roots.every((root,index)=>root===this.roots[index]);
     const signature=JSON.stringify([roots,cards.map(({onPath,...card})=>card)]);
     this.cardId=id;
     this.host.hidden=false;
     if(signature===this.signature){
-      const row=this.tree.querySelector<HTMLElement>('li[data-memory-id="'+CSS.escape(id)+'"] > .tree-row');
-      const alreadyActive=row?.classList.contains('is-active');
-      this.markActive(row);
-      if(changed&&!alreadyActive)this.scrollToCurrent();
+      this.markSelection();
+      if(changed&&!wasSelected)this.scrollToCurrent();
       return;
     }
     this.signature=signature;
-    // 1.207：内容默认全部展开，只记住用户手动收起的节点；切卡/刷新不改状态。
+    // 内容默认全部展开，只记住用户手动收起的节点；切卡/刷新不改状态。
     this.roots=roots;
     this.cards=new Map(cards.map(card=>[card.id,card]));
-    const next=document.createDocumentFragment();
-    for(const root of roots)this.appendCard(next,root);
-    this.tree.replaceChildren(next);
+    this.renderTree();
     this.host.scrollTop=sameTree?scrollTop:0;
     if(changed||!sameTree)this.scrollToCurrent();
   }
 
-  private markActive(row:HTMLElement|null){
-    for(const row of this.tree.querySelectorAll<HTMLElement>('.tree-row.is-active')){
-      row.classList.remove('is-active');row.querySelector('.tree-label')?.removeAttribute('aria-current');
+  private renderTree(){
+    this.displayed=this.filteredCards();
+    const next=document.createDocumentFragment();
+    const roots=this.roots.flatMap(id=>this.displayed.get(id)??[]);
+    for(const card of sortTreeRows(roots,this.sort))this.appendCard(next,card.id);
+    this.tree.replaceChildren(next);
+    this.markSelection();
+    this.updateExpandButton();
+  }
+
+  private filteredCards():Map<string,MemoryTreeCard>{
+    if(!this.types.length)return this.cards;
+    const filtered=new Map<string,MemoryTreeCard>();
+    const visit=(id:string):boolean=>{
+      const card=this.cards.get(id);
+      if(!card)return false;
+      const children=card.children.filter(visit);
+      const related=card.related.filter(target=>this.types.includes(target.kind));
+      if(!this.types.includes(card.kind)&&!children.length&&!related.length)return false;
+      filtered.set(id,{...card,children,related});
+      return true;
+    };
+    this.roots.forEach(visit);
+    return filtered;
+  }
+
+  private hasExpandedBranches():boolean{
+    return this.roots.some(id=>{
+      const card=this.displayed.get(id);
+      return !!card&&!!(card.children.length||card.related.length)&&!this.collapsed.has(id);
+    });
+  }
+
+  private updateExpandButton():void{
+    updateTreeToggle(this.expandButton,this.host.open&&this.hasExpandedBranches());
+  }
+
+  private setAllExpanded(expanded:boolean){
+    const scrollTop=this.host.scrollTop;
+    for(const card of this.cards.values()){
+      if(!card.children.length&&!card.related.length)continue;
+      if(expanded)this.collapsed.delete(card.id);
+      else this.collapsed.add(card.id);
     }
-    if(row){row.classList.add('is-active');row.querySelector('.tree-label')?.setAttribute('aria-current','true');}
+    this.saveCollapsed();
+    this.renderTree();
+    this.host.scrollTop=scrollTop;
+    if(expanded)this.scrollToCurrent();
+  }
+
+  private saveCollapsed(){
+    try{localStorage.setItem('ir.memoryTree.collapsed',JSON.stringify([...this.collapsed]));}catch{}
+  }
+
+  private markSelection(){
+    for(const row of this.tree.querySelectorAll<HTMLElement>('[data-selection-key]')){
+      row.classList.toggle('is-active',this.selection.includes(row.dataset.selectionKey!));
+      const label=row.querySelector('.tree-label')!;
+      if(row.dataset.selectionKey===this.cardId)label.setAttribute('aria-current','true');
+      else label.removeAttribute('aria-current');
+    }
   }
 
   private appendCard(list:HTMLUListElement|DocumentFragment,id:string,parentId?:string){
-    const card=this.cards.get(id)!;
-    const {item,row,label,toggle}=this.makeRow(card.title,card.kind);
+    const card=this.displayed.get(id)!;
+    const {item,row,toggle}=this.makeRow(card.title,card.kind);
     const relation:CardRelationKey|null=parentId?{parentId,childId:id,kind:'memory'}:null;
     item.dataset.memoryId=id;
-    this.bindCard(row,label,id,card.kind,relation);
-    if(id===this.cardId){row.classList.add('is-active');label.setAttribute('aria-current','true');}
+    this.bindCard(row,id,card.kind,relation);
     list.append(item);
     if(card.children.length||card.related.length){
       this.branch(item,toggle,card.title,this.collapsed,id,children=>{
-        for(const child of card.children)this.appendCard(children,child,id);
-        // 1.195：关联卡片不再单独一行做分组，直接和子卡片并列显示，靠 ↗ 标记区分。
-        for(const target of card.related)this.appendRelated(children,card,target);
+        const rows=[
+          ...card.children.map(child=>({card:this.displayed.get(child)!,related:false})),
+          ...card.related.map(target=>({card:target,related:true})),
+        ].map(entry=>({...entry,title:entry.card.title,kind:entry.card.kind}));
+        for(const {card:child,related} of sortTreeRows(rows,this.sort)){
+          if(related)this.appendRelated(children,card,child);
+          else this.appendCard(children,child.id,id);
+        }
       });
     }
   }
@@ -95,20 +181,20 @@ export class CardRelationsPanel {
   private appendRelated(list:HTMLUListElement|DocumentFragment,card:MemoryTreeCard,target:MemoryTreeLink){
     const {item,row,label}=this.makeRow(target.title,target.kind);
     item.classList.add('memory-related');
-    // 1.205：关联卡片保留目录树同款 L/T 图标，再加一个 ↗ 表示只是关联、不是子级。
+    // 关联卡片保留目录树同款 L/T 图标，再加一个 ↗ 表示只是关联、不是子级。
     const badge=label.querySelector<HTMLElement>('.tree-type');
     if(badge){
       const arrow=document.createElement('span');arrow.className='relation-link-badge';arrow.textContent='↗';arrow.title=t('关联卡片（只用于跳转）');arrow.setAttribute('aria-hidden','true');
       badge.after(arrow);
     }
     label.title=t('{0}（关联卡片，只用于跳转）',target.title);
-    this.bindCard(row,label,target.id,target.kind,{parentId:card.id,childId:target.id,kind:'related'});
+    this.bindCard(row,target.id,target.kind,{parentId:card.id,childId:target.id,kind:'related'});
     list.append(item);
   }
 
   private makeRow(title:string,kind?:MemoryTreeLink['kind']){
     const item=document.createElement('li');
-    const row=document.createElement('div');row.className='tree-row';
+    const row=document.createElement('div');row.className='tree-row';if(kind)row.dataset.kind=kind;
     const toggle=document.createElement('button');toggle.type='button';toggle.className='tree-toggle';toggle.disabled=true;
     const label=document.createElement('button');label.type='button';label.className='tree-label';label.title=title;
     const badge=document.createElement('span');badge.setAttribute('aria-hidden','true');
@@ -119,17 +205,26 @@ export class CardRelationsPanel {
     return {item,row,label,toggle};
   }
 
-  private bindCard(row:HTMLElement,label:HTMLButtonElement,id:string,kind:MemoryTreeLink['kind'],relation:CardRelationKey|null){
-    // 单击选中并打开卡片，收展由行左侧的 +／− 控制。
-    label.onclick=()=>{
-      this.markActive(row);
+  private bindCard(row:HTMLElement,id:string,kind:MemoryTreeLink['kind'],relation:CardRelationKey|null){
+    const key=relation?.kind==='related'?JSON.stringify([relation.parentId,id]):id;
+    row.dataset.selectionKey=key;
+    row.onclick=event=>{
+      if((event.target as HTMLElement).closest('.tree-toggle'))return;
+      if(event.shiftKey){
+        const visible=[...this.tree.querySelectorAll<HTMLElement>('[data-selection-key]')]
+          .filter(item=>!item.closest('ul[hidden]')).map(item=>item.dataset.selectionKey!);
+        if(this.selection.extend(visible,key)){this.markSelection();return;}
+      }
+      if(event.ctrlKey||event.metaKey){this.selection.toggle(key);this.markSelection();return;}
+      this.selection.select(key);
+      this.markSelection();
       this.actions.open(id);
     };
     row.oncontextmenu=event=>{event.preventDefault();this.actions.context(id,kind,relation,event);};
   }
 
   private branch(item:HTMLLIElement,toggle:HTMLButtonElement,title:string,collapsed:Set<string>,id:string,
-    populate:(list:HTMLUListElement)=>void):()=>void{
+    populate:(list:HTMLUListElement)=>void):void{
     const list=document.createElement('ul');
     item.append(list);toggle.disabled=false;
     const update=()=>{
@@ -142,17 +237,19 @@ export class CardRelationsPanel {
     };
     const flip=()=>{
       if(!collapsed.delete(id))collapsed.add(id);
-      try{localStorage.setItem('ir.memoryTree.collapsed',JSON.stringify([...collapsed]));}catch{}
+      this.saveCollapsed();
       update();
+      this.markSelection();
+      this.updateExpandButton();
     };
     toggle.onclick=flip;
     update();
-    return flip;
   }
 
   private scrollToCurrent(){
     if(!this.host.open)return;
-    const selected=this.tree.querySelector<HTMLElement>('.tree-row.is-active');
+    const selected=this.tree.querySelector<HTMLElement>('.tree-label[aria-current="true"]');
+    if(selected?.closest('ul[hidden]'))return;
     if(!selected)return;
     const bounds=this.host.getBoundingClientRect(),row=selected.getBoundingClientRect();
     const top=bounds.top+this.heading.offsetHeight;

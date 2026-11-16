@@ -1,12 +1,12 @@
-/* 1.22：Inter（Obsidian 默认正文字体，latin 子集，本地随包分发） */
+/* Inter（Obsidian 默认正文字体，latin 子集，本地随包分发） */
 @font-face {font-family:"Inter";font-style:normal;font-weight:400;font-display:swap;src:url("fonts/inter-latin-400-normal.woff2") format("woff2");}
 @font-face {font-family:"Inter";font-style:normal;font-weight:600;font-display:swap;src:url("fonts/inter-latin-600-normal.woff2") format("woff2");}
 @font-face {font-family:"Inter";font-style:normal;font-weight:700;font-display:swap;src:url("fonts/inter-latin-700-normal.woff2") format("woff2");}
 :root {
   color-scheme: dark;
-  --background-primary:#1e1e1e;
+  --background-primary:#1c1c1c;
   --background-primary-alt:#242424;
-  --background-secondary:#262626;
+  --background-secondary:#282828;
   --background-hover:#343434;
   --background-active:#35303e;
   --border:#363636;
@@ -17,66 +17,86 @@
   --text-accent:#b496ef;
   --accent:#8a5cf5;
   --code-color:#d7b87d;
-  /* 1.22：字体全部对齐 Obsidian——正文/界面用 Inter（本地分发），等宽用 SFMono/Consolas 栈 */
+  /* 字体全部对齐 Obsidian——正文/界面用 Inter（本地分发），等宽用 SFMono/Consolas 栈 */
   --font-text:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,"Microsoft YaHei UI","Noto Sans CJK SC",sans-serif;
   --font-interface:var(--font-text);
   --font-monospace:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,Courier,monospace;
   --font-size-text:16px;
   --text-size:16px;
   --sidebar-width:270px;
+  --split-size:5px;
 }
 * {box-sizing:border-box;}
 [hidden] {display:none!important;}
 html,body {height:100%;margin:0;overflow:hidden;}
-body {display:grid;grid-template-columns:minmax(0,1fr) 6px var(--sidebar-width);grid-template-rows:36px minmax(0,1fr);background:var(--background-primary);color:var(--text-normal);font:14px/1.5 var(--font-text);}
+body {display:grid;grid-template-columns:minmax(0,1fr) var(--split-size) var(--sidebar-width);grid-template-rows:36px minmax(0,1fr);background:var(--background-primary);color:var(--text-normal);font:14px/1.5 var(--font-text);}
 body.directory-collapsed,body.browser-open {grid-template-columns:minmax(0,1fr) 0 44px;}
 body.directory-collapsed #directory-pane,body.directory-collapsed #resize,body.browser-open #directory-pane,body.browser-open #resize {display:none;}
 button,input {font:inherit;color:inherit;}
 button {border:0;background:transparent;cursor:pointer;border-radius:4px;}
 button:hover {background:var(--background-hover);}
 button:focus-visible,input:focus-visible {outline:2px solid var(--accent);outline-offset:-2px;}
+#tree:focus,#editor-stack:focus {outline:none;}
 #sidebar {grid-column:3;grid-row:2;display:grid;grid-template-columns:minmax(0,1fr) 44px;min-width:0;min-height:0;background:var(--background-secondary);}
-#directory-pane {display:grid;grid-template-rows:minmax(0,1fr) auto;min-width:0;min-height:0;}
-#directory-pane:has(> #card-relations[open]:not([hidden])) {grid-template-rows:minmax(0,62fr) minmax(0,38fr);}
-#directory-tree-pane,#tree-viewport {display:flex;flex-direction:column;min-width:0;min-height:0;}
+#directory-pane {display:grid;grid-template-rows:minmax(0,1fr) 0 auto;min-width:0;min-height:0;background:var(--background-secondary);}
+#directory-pane:has(> #directory-tree-pane:not([open])) {grid-template-rows:auto 0 auto;align-content:start;}
+#directory-pane:has(> #directory-tree-pane:not([open])):has(> #card-relations[open]:not([hidden])) {grid-template-rows:auto 0 minmax(0,1fr);align-content:stretch;}
+#directory-pane:has(> #directory-tree-pane[open]):has(> #card-relations[open]:not([hidden])) {
+  grid-template-rows:clamp(60px,calc((100% - var(--split-size)) * var(--directory-ratio,.62)),calc(100% - 60px - var(--split-size))) var(--split-size) minmax(0,1fr);
+}
+#tree-divider {display:none;grid-row:2;cursor:row-resize;touch-action:none;}
+#directory-pane:has(> #directory-tree-pane[open]):has(> #card-relations[open]:not([hidden])) > #tree-divider {display:block;}
+#directory-tree-pane {display:flex;flex-direction:column;overflow:hidden;min-height:0;min-width:0;}
+#directory-tree-pane[open]::details-content,#tree-viewport {display:flex;flex:1;flex-direction:column;min-width:0;min-height:0;}
 #tree-viewport {flex:1;}
-#tree-viewport {position:relative;overflow:hidden;isolation:isolate;}
-.tree-sticky {position:absolute;left:8px;right:14px;z-index:6;pointer-events:none;}
+#tree-viewport {--tree-scrollbar-width:12px;position:relative;overflow:hidden;isolation:isolate;}
+#tree::-webkit-scrollbar {width:var(--tree-scrollbar-width);}
+.tree-sticky {position:absolute;left:8px;right:calc(8px + var(--tree-scrollbar-width));z-index:6;pointer-events:none;}
 .tree-sticky-top {top:0;}
 .tree-sticky-bottom {bottom:0;}
 .tree-sticky .sticky-row {position:relative;top:0;pointer-events:auto;background:var(--background-secondary);border-radius:0;border-bottom:1px solid var(--border);box-shadow:0 2px 4px #0002;}
 .tree-sticky-bottom .sticky-row {border-top:1px solid var(--border);border-bottom:0;}
-#action-rail {grid-column:2;display:flex;flex-direction:column;align-items:center;gap:5px;padding:8px 3px 10px;border-left:1px solid var(--border);background:var(--background-primary-alt);}
+#action-rail {grid-column:2;display:flex;flex-direction:column;align-items:center;gap:5px;padding:8px 3px 10px;border-left:1px solid var(--border);background:var(--rail-background,var(--background-secondary));}
 #action-rail button {display:flex;align-items:center;justify-content:center;width:36px;height:36px;flex:none;padding:7px;color:var(--text-muted);}
 svg.lucide {width:21px;height:21px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;}
 #action-rail button.is-active {color:var(--text-accent);background:var(--background-active);}
 #open-settings {margin-top:auto;}
-.directory-header {height:38px;flex:none;padding:8px 10px;display:flex;align-items:center;justify-content:space-between;gap:8px;color:var(--text-muted);font-size:12px;font-weight:600;}
-#directory-filters {display:flex;gap:5px;}
-#directory-filters button {width:20px;height:20px;padding:3px;border:1px solid transparent;border-radius:5px;opacity:.5;}
-#directory-filters button:before {content:"";display:block;width:12px;height:12px;border-radius:3px;background:var(--filter-color);}
-#directory-filters button[data-type="topic"] {--filter-color:#f2d680;}
-#directory-filters button[data-type="material"] {--filter-color:#a9dbc2;}
-#directory-filters button[data-type="cloze"] {--filter-color:#5684d5;}
-#directory-filters button[aria-pressed="true"] {opacity:1;border-color:var(--filter-color);background:var(--background-active);}
-#directory-filters button:hover {opacity:1;}
+.tree-heading {position:sticky;top:0;z-index:8;display:flex;align-items:center;gap:6px;height:38px;flex:none;padding:0 11px 0 10px;list-style:none;color:var(--text-muted);background:var(--background-secondary);font-size:12px;font-weight:600;cursor:pointer;}
+.tree-heading::-webkit-details-marker {display:none;}
+.tree-heading::after {content:"";width:6px;height:6px;flex:none;margin-left:4px;border-right:1px solid currentColor;border-bottom:1px solid currentColor;transform:rotate(-45deg);}
+details[open] > .tree-heading::after {transform:rotate(45deg);}
+.tree-actions {display:inline-flex;align-items:center;gap:2px;flex:none;margin-inline-start:auto;}
+.tree-actions button {display:grid;place-items:center;width:24px;height:24px;padding:2px;color:var(--text-muted);}
+.tree-actions button:hover {color:var(--text-normal);}
+.tree-actions button:disabled {opacity:.45;cursor:default;}
+.tree-actions .lucide {width:16px;height:16px;}
+.tree-filter-button::before {content:"";display:block;box-sizing:border-box;width:12px;height:12px;border:1px solid currentColor;border-radius:3px;}
+.tree-heading:has(.tree-filters button[aria-pressed="true"]) .tree-filter-button {background:var(--background-active);color:var(--text-accent);}
+.tree-popup {position-area:block-end span-inline-start;position-try-fallbacks:flip-inline,flip-block;margin:4px 0 0;padding:4px;background:var(--background-secondary);color:var(--text-normal);border:1px solid var(--border);border-radius:6px;box-shadow:0 4px 12px #0004;}
+.tree-sort:popover-open {display:grid;}
+.tree-sort button {text-align:start;padding:4px 9px;}
+.tree-sort button[aria-pressed="true"] {background:var(--background-active);color:var(--text-accent);}
+.tree-filters:popover-open {display:flex;gap:5px;}
+.tree-filters button {width:24px;height:24px;padding:4px;border:1px solid transparent;border-radius:5px;opacity:.6;}
+.tree-filters button::before {content:"";display:block;width:12px;height:12px;border-radius:3px;background:var(--filter-color);}
+.tree-filters button[data-type="topic"] {--filter-color:#f2d680;}
+.tree-filters button[data-type="material"] {--filter-color:#a9dbc2;}
+.tree-filters button[data-type="cloze"] {--filter-color:#5684d5;}
+.tree-filters button[aria-pressed="true"] {opacity:1;border-color:var(--filter-color);background:var(--background-active);}
+.tree-filters button:hover {opacity:1;}
 .count-legend {display:flex;gap:14px;font-size:10px;padding-right:6px;}
 .count-legend i {font-style:normal;}
 .count-new {color:#7eafff;}.count-learning {color:#ed8f92;}.count-review {color:#86c7a1;}
 .folder-counts {display:grid;grid-template-columns:repeat(3,minmax(19px,auto));gap:4px;padding-right:5px;flex:none;font:11px/1.5 var(--font-text);font-variant-numeric:tabular-nums;text-align:right;}
 .folder-counts .is-zero {opacity:.5;}
-#tree {position:relative;flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;padding:0 8px 10px;}
-#card-relations {min-height:0;overflow:auto;overscroll-behavior:contain;border-top:1px solid var(--border);background:var(--background-primary-alt);}
-#card-relations > summary {position:sticky;top:0;z-index:1;display:flex;align-items:center;justify-content:space-between;height:37px;padding:0 11px 0 10px;font-size:12px;font-weight:600;color:var(--text-muted);background:var(--background-primary-alt);cursor:pointer;list-style:none;}
-#card-relations > summary::-webkit-details-marker {display:none;}
-#card-relations > summary::after {content:"";width:6px;height:6px;border-right:1px solid currentColor;border-bottom:1px solid currentColor;transform:rotate(-45deg);}
-#card-relations[open] > summary::after {transform:rotate(45deg);}
+#tree {position:relative;flex:1;min-height:0;overflow-x:hidden;overflow-y:scroll;scrollbar-gutter:stable;overscroll-behavior:contain;padding:0 8px 10px;}
+#card-relations {grid-row:3;min-height:0;overflow-x:hidden;overflow-y:scroll;scrollbar-gutter:stable;overscroll-behavior:contain;background:var(--background-secondary);}
 .relation-panel {padding:0 8px 10px;}
 .relation-tree,.relation-tree ul {margin:0;padding:0;list-style:none;min-width:0;}
 .relation-tree ul {margin-left:12px;padding-left:7px;border-left:1px solid var(--branch);}
 .relation-tree ul > li {position:relative;}
 .relation-tree ul > li::before {content:"";position:absolute;left:-7px;top:14px;width:7px;border-top:1px solid var(--branch);pointer-events:none;}
-.relation-tree .tree-row {position:relative;padding-left:2px;font-size:13px;}
+.relation-tree .tree-row {position:relative;padding-left:3px;}
 .relation-tree .tree-row.is-active {color:var(--text-normal);}
 .relation-tree .relation-link-badge {color:var(--text-muted);font-size:13px;}
 .tree-spacer {width:1px;pointer-events:none;}
@@ -89,14 +109,14 @@ svg.lucide {width:21px;height:21px;fill:none;stroke:currentColor;stroke-width:1.
 .tree-label:hover,.tree-toggle:hover {background:transparent;}
 .tree-name {overflow:hidden;white-space:nowrap;text-overflow:ellipsis;}
 .tree-toggle {position:relative;width:20px;height:20px;flex:none;padding:0;color:var(--text-muted);font-size:12px;line-height:12px;}
-.tree-toggle:not(:disabled):before {position:absolute;content:"";width:11px;height:11px;border:1px solid currentColor;border-radius:2px;left:4px;top:4px;opacity:.7;}
+.tree-toggle:not(:disabled)::before {position:absolute;content:"";width:11px;height:11px;border:1px solid currentColor;border-radius:2px;left:4px;top:4px;opacity:.7;}
 .tree-toggle:disabled {color:transparent;cursor:default;}
 .tree-type {display:inline-grid;place-items:center;flex:0 0 16px;height:16px;border-radius:3px;font-size:10px;font-weight:750;line-height:1;}
 .tree-type-topic {background:#f2d680;color:#654706;}
 .tree-type-material {background:#a9dbc2;color:#184e36;}
 .tree-type-cloze {background:#345caa;color:white;}
-.tree-type-folder {color:#dfc685;}
-.tree-type-folder svg {width:18px;height:18px;}
+.tree-type-folder {color:var(--folder-icon-color,#dfc685);}
+.tree-type-folder svg {width:18px;height:18px;fill:var(--folder-icon-fill,none);}
 .tree-row[data-kind="folder"] .tree-label {font-weight:600;}
 .tree-row[data-kind="topic"] .tree-label {font-weight:500;}
 .tree-rail,.tree-elbow {position:absolute;top:0;bottom:0;border-left:1px solid var(--branch);pointer-events:none;opacity:.8;}
@@ -105,13 +125,12 @@ svg.lucide {width:21px;height:21px;fill:none;stroke:currentColor;stroke-width:1.
 .tree-elbow.is-last {bottom:auto;height:15px;}
 .tree-more {padding:2px 20px;color:var(--text-faint);font-size:12px;}
 .is-drop-target,.drop-root {outline:1px dashed var(--accent);outline-offset:-2px;}
-#resize {grid-column:2;grid-row:2;background:var(--border);cursor:col-resize;z-index:2;}
-/* 1.143：分隔条加宽 + 悬停高亮，更容易按住拖动（用户反馈太细） */
-#resize:hover,#resize:active {background:var(--accent);}
+.tree-row.is-list-drop-target {box-shadow:inset 0 -2px var(--accent);background:var(--background-hover);}
+#resize {grid-column:2;grid-row:2;cursor:col-resize;z-index:2;}
 main {grid-column:1;grid-row:2;display:flex;flex-direction:column;min-width:0;min-height:0;}
 #main-body {display:flex;flex:1;min-width:0;min-height:0;}
 #editor-stack {display:flex;flex-direction:column;flex:1;min-width:0;min-height:0;}
-#topbar {grid-column:1/-1;grid-row:1;display:flex;min-height:36px;border-bottom:1px solid var(--border);-webkit-app-region:drag;}
+#topbar {grid-column:1/-1;grid-row:1;display:flex;min-height:36px;background:var(--bar-background,var(--background-secondary));border-bottom:1px solid var(--border);-webkit-app-region:drag;}
 #breadcrumbs {display:flex;align-items:center;min-width:0;overflow:auto;gap:4px;padding:4px 12px;white-space:nowrap;font-size:13px;color:var(--text-muted);scrollbar-width:none;}
 #breadcrumbs button {padding:2px 6px;flex:none;-webkit-app-region:no-drag;}
 #breadcrumbs .slash {color:var(--text-faint);}
@@ -120,8 +139,8 @@ main {grid-column:1;grid-row:2;display:flex;flex-direction:column;min-width:0;mi
 #window-buttons button {width:46px;border-radius:0;font-family:var(--font-interface);font-size:18px;padding:0;}
 #window-buttons svg {width:16px;height:16px;vertical-align:middle;}
 #close:hover {background:#b93636;color:#fff;}
-/* 1.81（N14）：提示改成工作区右上角浮层——不再占顶部一行，出提示也不推开内容 */
-/* 1.133：浮层右缘跟随工作区——目录树收起时工作区变宽，浮层也要跟着贴到新右缘 */
+/* 提示改成工作区右上角浮层——不再占顶部一行，出提示也不推开内容 */
+/* 浮层右缘跟随工作区——目录树收起时工作区变宽，浮层也要跟着贴到新右缘 */
 body {--workspace-right:calc(var(--sidebar-width) + 14px);}
 body.directory-collapsed,body.browser-open {--workspace-right:58px;}
 body.solo-card {--workspace-right:14px;}
@@ -129,29 +148,30 @@ body.solo-card {--workspace-right:14px;}
   padding:7px 12px;border-radius:8px;background:rgba(85,69,35,.96);color:#ffe3a4;border:1px solid rgba(228,168,46,.5);
   font-size:12.5px;white-space:pre-wrap;box-shadow:0 8px 24px rgba(0,0,0,.35);}
 #notice[hidden] {display:none;}
-#workspace {display:flex;flex:1;min-height:0;min-width:0;}
+#workspace {display:flex;flex:1;min-height:0;min-width:0;background:var(--background-primary);}
 .empty {margin:36px 40px;color:var(--text-muted);font-size:14px;}
 .material-editor {flex:1;min-height:0;min-width:0;overflow:hidden;}
 .cm-editor {height:100%;font-size:var(--text-size);color:var(--text-normal);}
 .cm-editor.cm-focused {outline:none;}
 .cm-scroller {overflow:auto;font-family:var(--font-text);line-height:1.5;padding:28px 32px 32px;overscroll-behavior:contain;}
 .cm-content {padding:0;caret-color:var(--text-normal)!important;}
-/* 1.22：CodeMirror 运行时注入 .cm-scroller/.cm-content 的 monospace，晚于本表 → 提高特异性覆盖 */
+/* CodeMirror 运行时注入 .cm-scroller/.cm-content 的 monospace，晚于本表 → 提高特异性覆盖 */
 .cm-editor .cm-scroller,.cm-editor .cm-content,.cm-editor .cm-line {font-family:var(--font-text) !important;}
 .cm-line {padding:0;}
 .cm-selectionBackground {background:#534369!important;}
 .cm-activeLine {background:transparent;}
 .cm-content ::selection {background:#534369;}
-/* 1.79：检测卡默认上下 5:5（用户确认：所有卡片都用 5:5） */
-.test-card {display:grid;grid-template-rows:minmax(0,50fr) 6px minmax(0,50fr);flex:1;min-height:0;min-width:0;}
-.card-pane {display:flex;flex-direction:column;min-height:0;min-width:0;overflow:hidden;position:relative;}
+/* 检测卡默认上下 5:5（用户确认：所有卡片都用 5:5） */
+.test-card {display:grid;grid-template-rows:minmax(0,50fr) var(--split-size) minmax(0,50fr);flex:1;min-height:0;min-width:0;}
+.card-pane {background:var(--background-primary);display:flex;flex-direction:column;min-height:0;min-width:0;overflow:hidden;position:relative;}
+.card-pane.answer,.material-extra-answer {background:var(--answer-background,var(--background-primary));}
 .card-pane.is-answer-hidden .card-editor {visibility:hidden;}
 .card-pane.is-answer-hidden:after {content:attr(data-answer-hint);position:absolute;inset:55px 20px 20px;display:grid;place-items:center;color:var(--text-faint);font-size:14px;pointer-events:none;}
-.card-pane.answer {background:var(--background-primary-alt);}
+
 .card-label {padding:18px 32px 6px;flex:none;color:var(--text-muted);font-weight:600;font-size:13px;}
 .card-editor {flex:1;min-height:0;overflow:hidden;}
 .card-editor .cm-scroller {padding:28px 32px 32px;}
-/* 1.48：所有文本编辑区（与 Obsidian 一致）默认 I 形光标；
+/* 所有文本编辑区（与 Obsidian 一致）默认 I 形光标；
    复习模式下默认箭头，只有点「编辑」进入编辑态后才变成 I 形。 */
 .cm-editor .cm-scroller,
 .cm-editor .cm-content {cursor:text;}
@@ -166,10 +186,7 @@ body.study-cards-mode .card-editor .cm-content {cursor:default;}
 body.study-cards-mode .card-editor .cm-editor.is-over-text .cm-scroller,
 body.study-cards-mode .card-editor .cm-editor.is-over-text .cm-content {cursor:text;}
 .card-rule {position:relative;cursor:row-resize;touch-action:none;user-select:none;z-index:3;}
-.card-rule:before {content:"";position:absolute;left:0;right:0;top:3px;height:2px;background:#666;}
-.card-rule:after {content:"";position:absolute;top:1px;left:calc(50% - 26px);width:52px;height:5px;border-radius:2px;background:#8a8a8a;opacity:0;}
-.card-rule:hover:after,.card-rule.is-dragging:after,.card-rule:focus-visible:after {opacity:1;}
-/* 1.64：高亮只留底色，不要下划线/底边线 */
+/* 高亮只留底色，不要下划线/底边线 */
 .irtree-extracted {background:rgba(228,168,46,.29);border-bottom:none;color:inherit;}
 .irtree-extracted-extract {background:rgba(78,177,117,.3);}
 .irtree-extracted-cloze {background:rgba(78,130,211,.34);}
@@ -186,7 +203,7 @@ body.study-cards-mode .card-editor .cm-editor.is-over-text .cm-content {cursor:t
 .has-extra-answer .cm-scroller {overflow:visible;}
 .material-extra-rule {margin:0 32px;border:0;border-top:1px solid var(--border);}
 .plain-cloze-placeholder,.plain-cloze-placeholder * {color:inherit!important;text-decoration:none!important;border:0!important;background:transparent!important;box-shadow:none!important;}
-/* 1.133：裸 `[文字]`（没有链接地址）按普通正文显示，不再着成链接色 */
+/* 裸 `[文字]`（没有链接地址）按普通正文显示，不再着成链接色 */
 .plain-bracket-text,.plain-bracket-text * {color:inherit!important;text-decoration:none!important;}
 .reading-rich {color:inherit;}
 .reading-rich-math {display:inline-block;}
@@ -204,6 +221,39 @@ body.study-cards-mode .card-editor .cm-editor.is-over-text .cm-content {cursor:t
 .reading-rich-markdown {display:block;overflow:auto;}
 .reading-rich-markdown table {border-collapse:collapse;max-width:100%;}
 .reading-rich-markdown td,.reading-rich-markdown th {padding:6px 10px;border:1px solid var(--border);}
+
+.cm-editor .cm-line.md-code-line {
+  position:relative;
+  padding-inline:12px;
+  background:var(--background-primary-alt);
+  font-family:var(--font-monospace) !important;
+  font-size:.875em;
+  --code-color:var(--text-normal);
+}
+.cm-editor .cm-line.md-code-line-start {
+  padding-top:6px;
+  border-start-start-radius:4px;
+  border-start-end-radius:4px;
+}
+.cm-editor .cm-line.md-code-line-end {
+  padding-bottom:6px;
+  border-end-start-radius:4px;
+  border-end-end-radius:4px;
+}
+.md-code-copy {
+  position:absolute;
+  inset-block-start:4px;
+  inset-inline-end:5px;
+  display:inline-flex;
+  align-items:center;
+  gap:5px;
+  height:26px;
+  padding:0 5px;
+  color:var(--text-muted);
+}
+.md-code-copy:hover,.md-code-copy:focus-visible {color:var(--text-normal);}
+.md-code-copy .lucide {display:block;width:16px;height:16px;}
+.md-code-language {max-width:12ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;}
 .reading-media {display:inline-block;max-width:100%;padding-block:4px;}
 .reading-media img {max-width:100%;height:auto;border-radius:3px;vertical-align:middle;}
 .reading-image {position:relative;}
@@ -216,6 +266,7 @@ body.study-cards-mode .card-editor .cm-editor.is-over-text .cm-content {cursor:t
 .reading-media video {max-width:100%;max-height:460px;}
 .reading-media audio {max-width:100%;width:360px;}
 .reading-rich a {color:var(--text-accent);cursor:pointer;text-decoration:underline;}
+.external-link-mark {display:inline-block;vertical-align:.18em;margin-inline-start:.2em;font-size:.75em;line-height:1;}
 #context-menu {position:fixed;z-index:30;min-width:180px;background:#292929;border:1px solid #484848;box-shadow:0 8px 32px #0008;border-radius:7px;padding:5px;}
 #context-menu button {display:block;text-align:left;width:100%;padding:6px 10px;font-size:13px;}
 #context-menu .danger {color:#f09595;}
@@ -241,26 +292,26 @@ dialog input {background:var(--background-primary);border:1px solid #555;border-
 .occlusion-list button[aria-pressed="true"] {background:var(--background-active);box-shadow:inset 2px 0 var(--accent);}
 #switcher,#relation-picker {padding:12px;width:min(600px,90vw);}
 #search-results,.relation-results {max-height:min(440px,55vh);overflow:auto;padding-top:8px;}
-/* 1.210：关联卡片的列表固定高度，避免结果一出来对话框就变高、输入框上下跳 */
+/* 关联卡片的列表固定高度，避免结果一出来对话框就变高、输入框上下跳 */
 .relation-results {height:min(320px,45vh);max-height:none;}
 #search-results button,.relation-results button {display:block;width:100%;text-align:left;padding:8px 10px;overflow-wrap:anywhere;}
 .relation-results button.is-active {background:var(--background-active);}
-/* 1.93：保留"计数一行 + 按钮一行"的结构（复习前后都好看），但整体压扁——
+/* 保留"计数一行 + 按钮一行"的结构（复习前后都好看），但整体压扁——
    高度由内部固定行高决定（计数 16 + 按钮 49 + 上下内边距 10 ≈ 75px），三种模式一致且不再撑高。 */
-#study-controls {border-top:1px solid var(--border);padding:4px 10px 6px;background:var(--background-primary-alt);flex:none;
+#study-controls {border-top:1px solid var(--border);padding:4px 10px 6px;background:var(--background-secondary);flex:none;
   box-sizing:border-box;}
 .sr-only {position:absolute;width:1px;height:1px;padding:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap;}
 .study-bottom-row {display:grid;grid-template-columns:minmax(90px,1fr) minmax(0,auto) minmax(90px,1fr);align-items:end;gap:12px;}
 .study-center {min-width:0;}
 #study-counts {text-align:center;font-size:12px;line-height:16px;font-weight:600;min-height:16px;}
-/* 1.92：空时也占位，避免"待办→复习"切换瞬间上移 */
+/* 空时也占位，避免"待办→复习"切换瞬间上移 */
 #study-counts:empty {min-height:16px;}
 .study-count-plus {color:var(--text-muted);font-weight:400;}
-/* 1.91：按钮行固定高度——待办按钮带间隔小字、复习按钮不带，高度差会让进入复习时整块工作区往上/下跳 */
+/* 按钮行固定高度——待办按钮带间隔小字、复习按钮不带，高度差会让进入复习时整块工作区往上/下跳 */
 #study-buttons {display:flex;justify-content:center;align-items:flex-end;gap:18px;min-height:49px;flex-wrap:wrap;}
-/* 1.95：所有选项底部对齐——带"1天/2天"小字的和没带的按钮不再一高一低 */
+/* 所有选项底部对齐——带"1天/2天"小字的和没带的按钮不再一高一低 */
 .study-choice {display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:3px;min-height:49px;}
-/* 1.94：间隔小字行高与计数行一致，保证"有间隔/无间隔"两种按钮行同为 49px */
+/* 间隔小字行高与计数行一致，保证"有间隔/无间隔"两种按钮行同为 49px */
 .study-interval {font-size:12px;line-height:16px;color:var(--text-normal);white-space:nowrap;}
 .study-action {min-width:78px;height:30px;padding:4px 16px;border:1px solid #454545;background:#3c3c3c;color:#e5e5e5;border-radius:999px;display:inline-flex;align-items:center;justify-content:center;white-space:nowrap;font-size:12px;box-shadow:0 1px 2px #0003;}
 .study-action:hover {background:#484848;}
@@ -279,10 +330,10 @@ dialog input {background:var(--background-primary);border:1px solid #555;border-
 #browser-filters button span {overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 #browser-filters button svg {width:15px;height:15px;flex:none;}
 #browser-filters .is-active {background:var(--background-active);color:var(--text-normal);}
-/* 1.192：卡片类型 / 学习状态可多选——选中项右侧打勾，清楚区分「已选」与「未选」。 */
+/* 卡片类型 / 学习状态可多选——选中项右侧打勾，清楚区分「已选」与「未选」。 */
 #browser-filters button[data-group="kind"][aria-pressed="true"]::after,
 #browser-filters button[data-group="status"][aria-pressed="true"]::after {content:'✓';margin-left:auto;font-size:11px;color:var(--accent);}
-/* 1.142：牌组后面的到期数（仿 Anki 的牌组计数） */
+/* 牌组后面的到期数（仿 Anki 的牌组计数） */
 .browser-filter-count {margin-left:auto;font-size:11px;color:var(--text-faint);}
 .browser-heading {display:flex;align-items:center;gap:12px;padding:9px 16px 5px;flex:none;}
 .browser-heading h2 {font-size:14px;font-weight:600;margin:0;}
@@ -291,10 +342,10 @@ dialog input {background:var(--background-primary);border:1px solid #555;border-
 .browser-toolbar {display:flex;align-items:center;gap:7px;padding:5px 16px 10px;flex:none;}
 .browser-toolbar input {min-width:0;border:1px solid var(--border);border-radius:5px;padding:5px 8px;background:var(--background-primary-alt);color:var(--text-normal);font:12px/1.5 var(--font-text);}
 #browser-query {flex:1;min-width:140px;}
-/* 1.153：表格独占一个定位容器，自绘滚动条只贴在表格右缘，不会跑到窗口右上角/编辑区上 */
+/* 表格独占一个定位容器，自绘滚动条只贴在表格右缘，不会跑到窗口右上角/编辑区上 */
 #browser-table-pane {position:relative;flex:1;min-width:0;min-height:0;display:flex;flex-direction:column;}
 #browser-table-scroll {overflow:auto;flex:1;min-height:0;border-block:1px solid var(--border);scrollbar-width:none;}
-/* 1.152：自绘滚动条（原生滑块几千行时被压成几像素，抓不住）；原生滚动条隐藏 */
+/* 自绘滚动条（原生滑块几千行时被压成几像素，抓不住）；原生滚动条隐藏 */
 #browser-table-scroll::-webkit-scrollbar {width:0;height:0;}
 #browser-scrollbar {position:absolute;top:1px;right:0;bottom:1px;width:13px;background:var(--background-primary-alt);cursor:pointer;z-index:4;}
 #browser-scrollbar[hidden] {display:none;}
@@ -312,8 +363,8 @@ dialog input {background:var(--background-primary);border:1px solid #555;border-
 .browser-th-resize {position:absolute;top:0;right:0;bottom:0;width:10px;cursor:col-resize;z-index:2;touch-action:none;}
 .browser-th-resize:hover,.browser-th-resize:active {background:var(--accent);opacity:.35;}
 body.browser-resizing {cursor:col-resize;user-select:none;}
-/* 1.95：除"标题"外的列用固定窄宽，标题吃掉剩余空间——避免各列均分导致大片留白。
-   1.133：列可拖动换顺序、右键勾选显示，所以宽度改成在 renderHead() 里按列 key 写内联样式，
+/* 除"标题"外的列用固定窄宽，标题吃掉剩余空间——避免各列均分导致大片留白。
+   列可拖动换顺序、右键勾选显示，所以宽度改成在 renderHead() 里按列 key 写内联样式，
    CSS 只保留「标题列自动宽度」和拖动/列菜单的外观。 */
 #browser-table th:first-child {width:auto;}
 #browser-table th[draggable="true"] {cursor:grab;}
@@ -342,9 +393,9 @@ body.browser-resizing {cursor:col-resize;user-select:none;}
 .browser-conflict-dialog[open] {display:flex;flex-direction:column;}
 .browser-conflict-dialog header {display:flex;align-items:center;justify-content:space-between;gap:12px;flex:none;}
 .browser-conflict-dialog header h2 {flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-/* 1.193：冲突一张接一张处理——计数、右键删除菜单和状态行 */
+/* 冲突一张接一张处理——计数、右键删除菜单和状态行 */
 .browser-conflict-count {font-size:12px;color:var(--text-faint);white-space:nowrap;}
-/* 1.194：内容多少都保持同一个窗口大小，只有中间内容区滚动，不会一下大一下小。 */
+/* 内容多少都保持同一个窗口大小，只有中间内容区滚动，不会一下大一下小。 */
 .browser-conflict-body {flex:1 1 auto;min-height:0;overflow:auto;padding-right:4px;}
 .browser-conflict-dialog .sync-topbar {flex:none;margin-top:10px;}
 .browser-conflict-hint {font-size:11.5px;color:var(--text-faint);}
@@ -360,17 +411,15 @@ body.browser-resizing {cursor:col-resize;user-select:none;}
 #browser-page {min-width:105px;font-variant-numeric:tabular-nums;}
 #browser-enabled {margin-left:4px;}
 .browser-hint {margin-left:auto;font-size:11px;color:var(--text-faint);}
-#browser-rule {height:8px;flex:none;cursor:row-resize;touch-action:none;background:var(--background-secondary);border-block:1px solid var(--border);}
-#browser-rule:hover,#browser-rule:focus-visible {background:var(--accent);}
-#browser-rule:hover,#browser-rule:focus-visible {background:var(--accent);}
+#browser-rule {height:var(--split-size);flex:none;cursor:row-resize;touch-action:none;}
 button:disabled {cursor:default;opacity:.55;}
-/* 1.20：设置窗口默认固定尺寸（切换标签不再跳动），但保留可调整——右下角可拖动，尺寸记入 localStorage。 */
+/* 设置窗口默认固定尺寸（切换标签不再跳动），但保留可调整——右下角可拖动，尺寸记入 localStorage。 */
 #preferences {position:fixed;margin:0;max-width:96vw;max-height:92vh;padding:0;
   flex-direction:column;resize:none;overflow:hidden;}
-/* 1.24：作者样式里的 display 会压过浏览器的 dialog:not([open]){display:none}，
+/* 作者样式里的 display 会压过浏览器的 dialog:not([open]){display:none}，
    导致未打开的设置框一直悬在界面上（删不掉的空框）。只有 [open] 时才 flex。 */
 #preferences[open] {display:flex;}
-/* 1.25：右上角关闭按钮 */
+/* 右上角关闭按钮 */
 .preference-close {position:absolute;top:14px;right:16px;width:26px;height:26px;padding:0;border-radius:6px;
   background:transparent;color:var(--text-muted);font-size:17px;line-height:1;display:flex;align-items:center;justify-content:center;}
 .preference-close:hover {background:var(--background-hover);color:var(--text-normal);}
@@ -379,7 +428,7 @@ button:disabled {cursor:default;opacity:.55;}
 .preference-tabs {display:flex;gap:5px;border-bottom:1px solid var(--border);padding-bottom:8px;flex:none;flex-wrap:wrap;}
 .preference-tabs button {padding:6px 10px;color:var(--text-muted);}
 .preference-tabs .is-active {color:var(--text-normal);background:var(--background-active);}
-/* 1.28：内容区必须自己当 flex 列，否则 .preference-body 的 flex:1 不生效（内容比窗口高却滚不动） */
+/* 内容区必须自己当 flex 列，否则 .preference-body 的 flex:1 不生效（内容比窗口高却滚不动） */
 .preference-content {display:flex;flex-direction:column;flex:1;min-height:0;}
 .preference-body {flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;padding:2px 6px 10px 0;}
 .preference-body h4 {margin:18px 0 8px;color:var(--text-normal);font-size:13px;}
@@ -440,9 +489,9 @@ button:disabled {cursor:default;opacity:.55;}
 .statistics-history td,.statistics-history th {padding:7px 9px;text-align:left;border-bottom:1px solid var(--border);white-space:nowrap;}
 .statistics-history th {position:sticky;top:0;background:var(--background-secondary);}
 @media(prefers-color-scheme:light) {
-  :root[data-theme="system"] {color-scheme:light;--background-primary:#ffffff;--background-primary-alt:#f6f7f9;--background-secondary:#f2f3f5;--background-hover:#e9ebef;--background-active:#e7e1f6;--border:#dcdde1;--branch:#b1b4ba;--text-normal:#222428;--text-muted:#6a6f76;--text-faint:#959aa2;--text-accent:#6f4fc4;--accent:#6f4fc4;--code-color:#9a5b00;}
+  :root[data-theme="system"] {color-scheme:light;--background-primary:#f6f8f5;--answer-background:#fafbf8;--background-primary-alt:#edf3ee;--background-secondary:#ebf4e8;--rail-background:#e4f0e1;--bar-background:#edf4f3;--background-hover:#dfeade;--folder-icon-color:#8b641d;--folder-icon-fill:#d7ad56;--background-active:#deedfc;--border:#d3dfd5;--branch:#b0bfb3;--text-normal:#202924;--text-muted:#525e56;--text-faint:#707d74;--text-accent:#235a96;--accent:#2866ad;--code-color:#9a5b00;}
 }
-:root[data-theme="light"] {color-scheme:light;--background-primary:#ffffff;--background-primary-alt:#f6f7f9;--background-secondary:#f2f3f5;--background-hover:#e9ebef;--background-active:#e7e1f6;--border:#dcdde1;--branch:#b1b4ba;--text-normal:#222428;--text-muted:#6a6f76;--text-faint:#959aa2;--text-accent:#6f4fc4;--accent:#6f4fc4;--code-color:#9a5b00;}
+:root[data-theme="light"] {color-scheme:light;--background-primary:#f6f8f5;--answer-background:#fafbf8;--background-primary-alt:#edf3ee;--background-secondary:#ebf4e8;--rail-background:#e4f0e1;--bar-background:#edf4f3;--background-hover:#dfeade;--folder-icon-color:#8b641d;--folder-icon-fill:#d7ad56;--background-active:#deedfc;--border:#d3dfd5;--branch:#b0bfb3;--text-normal:#202924;--text-muted:#525e56;--text-faint:#707d74;--text-accent:#235a96;--accent:#2866ad;--code-color:#9a5b00;}
 :root[data-theme="light"] dialog,:root[data-theme="light"] #context-menu {background:#fafafa;border-color:#ccc;}
 :root[data-theme="light"] .study-action {color:#333;background:#e7e7e7;border-color:#d8d8d8;}
 :root[data-theme="light"] .study-action:hover {background:#ddd;}
@@ -451,7 +500,7 @@ button:disabled {cursor:default;opacity:.55;}
 :root[data-theme="light"] .math-number {color:#28794e;}
 :root[data-theme="light"] .math-brace {color:#92701b;}
 @media(max-width:1000px) {.browser-hint {display:none;}.browser-toolbar {flex-wrap:wrap;}#study-buttons {gap:8px;}.study-bottom-row {gap:6px;grid-template-columns:85px minmax(0,1fr) 85px;}.study-action {min-width:68px;padding-inline:12px;}}
-/* 1.9：同步面板 */
+/* 同步面板 */
 .sync-status {border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:10px;background:var(--background-secondary);}
 .sync-status-line {font-size:12px;line-height:1.5;padding:2px 0;color:var(--text-normal);overflow-wrap:anywhere;}
 .sync-status-line:has(.sync-status-label) {display:grid;grid-template-columns:5em minmax(0,1fr);gap:8px;align-items:start;}
@@ -465,11 +514,11 @@ button:disabled {cursor:default;opacity:.55;}
 .sync-peer-add input {flex:1 1 10em;min-width:0;border:1px solid var(--border);border-radius:5px;padding:5px 8px;background:var(--background-primary-alt);color:var(--text-normal);font:12px/1.5 var(--font-text);}
 .sync-peer-add button,.sync-peer button {padding:5px 10px;font-size:12px;}
 .sync-key-controls {display:flex;align-items:center;gap:8px;}
-/* 1.6 ⑥：一键优化参数 / 测算留存度按钮组 */
+/* 一键优化参数 / 测算留存度按钮组 */
 .preference-optimize {display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:10px 0 2px;}
 .preference-optimize button {padding:6px 12px;font-size:12px;}
 .preference-optimize .preference-hint {flex-basis:100%;margin:2px 0 0;}
-/* 1.6 ⑧：内嵌终端对话框。
+/* 内嵌终端对话框。
    注意：display:flex 必须写在 [open] 上——直接写在 #card-terminal 会覆盖 UA 样式表里
    dialog:not([open]){display:none}，导致"已关闭"的对话框仍然渲染并拦截整页点击。 */
 #card-terminal:not([open]) {display:none;}
@@ -483,22 +532,22 @@ button:disabled {cursor:default;opacity:.55;}
 :root[data-theme="light"] #card-terminal {background:#f4f4f4;}
 :root[data-theme="light"] #card-terminal .terminal-host {background:#fff;}
 
-/* 1.19：优化进度条（逐牌组时为真实进度，单牌组为不确定进度） */
+/* 优化进度条（逐牌组时为真实进度，单牌组为不确定进度） */
 .progress{height:5px;border-radius:3px;background:var(--border);overflow:hidden;margin:8px 0}
 .progress>span{display:block;height:100%;width:0;background:var(--text-accent);transition:width .2s ease}
 .progress.is-indeterminate>span{width:35%;animation:progress-slide 1.15s ease-in-out infinite}
 @keyframes progress-slide{0%{margin-left:-35%}100%{margin-left:100%}}
-/* 1.26：独立编辑窗口（?card=…）——隐藏目录树、功能栏与分隔条，只留编辑区 */
+/* 独立编辑窗口（?card=…）——隐藏目录树、功能栏与分隔条，只留编辑区 */
 body.solo-card {grid-template-columns:minmax(0,1fr);}
 body.solo-card #directory-pane,
 body.solo-card #resize,
 body.solo-card #action-rail {display:none !important;}
 body.solo-card #breadcrumbs {padding-left:18px;}
-/* 1.28：浏览卡片时不再显示下方编辑区——浏览器占满内容区，双击才开新窗口编辑 */
+/* 浏览卡片时不再显示下方编辑区——浏览器占满内容区，双击才开新窗口编辑 */
 body.browser-open #card-browser {flex:1 1 auto;}
 body.browser-open #browser-rule,
 body.browser-open #workspace {display:none !important;}
-/* 1.133：独立浏览窗口（?browser=1）与独立添加卡片窗口（?add=1）——没有目录树与功能栏。
+/* 独立浏览窗口（?browser=1）与独立添加卡片窗口（?add=1）——没有目录树与功能栏。
    浏览窗口保留自己的筛选栏与列表；添加窗口只显示表单。 */
 body.solo-browser,body.solo-add {grid-template-columns:minmax(0,1fr);--workspace-right:14px;}
 body.solo-browser #sidebar,
@@ -524,28 +573,28 @@ body.solo-add #workspace {display:block;overflow:auto;padding:14px 22px 18px;}
 .add-hint {margin:0;font-size:11px;color:var(--text-faint);}
 :root[data-theme="light"] .add-field select,:root[data-theme="light"] #add-card-form input,
 :root[data-theme="light"] #add-card-form textarea {border-color:#ccc;background:#fff;}
-/* 1.33：统计图表的悬停提示与柱子交互（参考 Anki 的悬停读数） */
+/* 统计图表的悬停提示与柱子交互（参考 Anki 的悬停读数） */
 .statistics-chart {position:relative;}
 .statistics-tooltip {position:absolute;z-index:3;pointer-events:none;padding:4px 8px;border-radius:6px;
   background:#1b1b1b;border:1px solid var(--border);color:var(--text-normal);font-size:12px;white-space:nowrap;
   box-shadow:0 6px 18px #0008;}
 .statistics-point {transition:fill-opacity .12s ease;}
 .statistics-point:hover {stroke:var(--text-normal);stroke-width:1;}
-/* 1.35：图表范围选择（每个图独立一行）。未选中为灰色，选中用强调色描边，便于看出当前区间。 */
+/* 图表范围选择（每个图独立一行）。未选中为灰色，选中用强调色描边，便于看出当前区间。 */
 .chart-range {display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:6px 0 2px;}
 .chart-range .range-button {padding:3px 9px;font-size:12px;border-radius:6px;border:1px solid #4a4a4a;
   background:#2b2b2b;color:#9c9c9c;}
 .chart-range .range-button:hover {color:#c9c9c9;border-color:#6a6a6a;}
 .chart-range .range-button.is-active {color:var(--text-normal);border-color:var(--text-accent);background:#332b45;}
 .chart-range label {display:flex;align-items:center;gap:4px;font-size:12px;color:#9c9c9c;}
-/* 1.36：统计/垃圾桶等小窗口 = 标题 + 可滚动内容 + 底部按钮栏（仿 Anki 统计窗口） */
+/* 统计/垃圾桶等小窗口 = 标题 + 可滚动内容 + 底部按钮栏（仿 Anki 统计窗口） */
 #statistics,#trash {display:flex;flex-direction:column;width:min(820px,94vw);height:min(840px,90vh);max-height:92vh;overflow:hidden;}
 #statistics:not([open]),#trash:not([open]) {display:none;}
 #statistics .statistics-body,#trash .trash-body {flex:1;min-height:0;overflow-y:auto;padding-right:6px;}
 #statistics .dialog-actions,#trash .dialog-actions {flex:none;margin-top:12px;padding-top:10px;border-top:1px solid var(--border);}
 .statistics-heading h3 {margin:0 0 10px;}
-/* 1.42：仿 Obsidian 设置窗口 —— 左导航 + 右卡片 */
-/* 1.46：窗口尺寸对齐 Obsidian 设置窗口（约 840×700） */
+/* 仿 Obsidian 设置窗口 —— 左导航 + 右卡片 */
+/* 窗口尺寸对齐 Obsidian 设置窗口（约 840×700） */
 #preferences {width:min(840px,94vw);height:min(700px,90vh);padding:0;overflow:visible;resize:none;}
 #preferences[open] {display:flex;}
 #preferences .preference-content {flex-direction:row;align-items:stretch;min-height:0;overflow:hidden;border-radius:12px;}
@@ -558,40 +607,50 @@ body.solo-add #workspace {display:block;overflow:auto;padding:14px 22px 18px;}
 .preference-nav-item.is-active {background:var(--background-active);color:var(--text-normal);font-weight:600;}
 .preference-main {flex:1;min-width:0;display:flex;flex-direction:column;padding:16px 18px 0;}
 .preference-main h3 {margin:0 0 12px;font-size:16px;}
-/* 1.43：设置窗口标题行 + 右上角三个小按钮（恢复默认 / 取消 / 保存） */
+/* 设置窗口标题行 + 右上角三个小按钮（恢复默认 / 取消 / 保存） */
 .preference-header {display:flex;align-items:center;gap:10px;margin:0 0 12px;flex:none;}
 .preference-header h3 {margin:0;font-size:16px;}
 
-/* 1.52：按住 Ctrl 悬停到摘录/条目高亮时，提示"可以跳转" */
+/* 按住 Ctrl 悬停到摘录/条目高亮时，提示"可以跳转" */
 .irtree-extracted {cursor:inherit;}
 body.ctrl-down .irtree-extracted {cursor:pointer;}
 
-/* 1.59：去掉设置窗口的暗边（border / 外发光 / 背景压暗），只留轻微阴影区分层次 */
+/* 去掉设置窗口的暗边（border / 外发光 / 背景压暗），只留轻微阴影区分层次 */
 #preferences {border:none;outline:none;box-shadow:0 18px 48px rgba(0,0,0,.35);background:var(--background-secondary);}
 #preferences::backdrop {background:transparent;}
 #preferences .preference-main {padding:16px 18px 14px;}
 
-/* 1.59：帮助页折叠大纲（大板块 → 小板块 → 正文） */
+/* 帮助页折叠大纲（大板块 → 小板块 → 正文） */
 .preference-outline {padding:2px 0;}
-.preference-folder {border:1px solid #3a3a3a;border-radius:8px;margin-bottom:8px;background:#262626;padding:0 10px;}
-.preference-folder>summary {cursor:pointer;list-style:none;padding:9px 2px;font-weight:600;font-size:13px;color:#dcdcdc;}
+.preference-folder {border:1px solid var(--border);border-radius:8px;margin-bottom:8px;background:var(--background-primary);padding:0 10px;}
+.preference-folder>summary {cursor:pointer;list-style:none;padding:9px 2px;font-weight:600;font-size:13px;color:var(--text-normal);}
 .preference-folder>summary::-webkit-details-marker {display:none;}
 .preference-folder>summary::before {content:"▸";display:inline-block;width:14px;color:#8a8a8a;transition:transform .12s;}
 .preference-folder[open]>summary::before {transform:rotate(90deg);}
-.preference-sub {margin:2px 0 6px 18px;border-left:1px solid #3a3a3a;padding-left:10px;}
-.preference-sub>summary {cursor:pointer;list-style:none;padding:5px 0;font-size:12.5px;color:#c2c2c2;}
+.preference-sub {margin:2px 0 6px 18px;border-left:1px solid var(--border);padding-left:10px;}
+.preference-sub>summary {cursor:pointer;list-style:none;padding:5px 0;font-size:12.5px;color:var(--text-muted);}
 .preference-sub>summary::-webkit-details-marker {display:none;}
 .preference-sub>summary::before {content:"▸";display:inline-block;width:12px;color:#7d7d7d;transition:transform .12s;}
 .preference-sub[open]>summary::before {transform:rotate(90deg);}
 .preference-sub p {margin:4px 0 6px;font-size:12px;}
+.markdown-help-example {padding:5px 2px 9px;}
+.markdown-help-example > h4 {margin:0 0 6px;font-size:13px;}
+.markdown-help-example > p {margin:5px 0 0;}
+.markdown-help-source {display:flex;align-items:flex-start;gap:12px;background:var(--background-primary-alt);border-radius:5px;padding:7px 9px;}
+.markdown-help-source pre {margin:0;white-space:pre-wrap;overflow-wrap:anywhere;min-width:0;flex:1;font:12px/1.6 var(--font-monospace);}
+.markdown-help-source code {font:inherit;}
+.markdown-help-source button {flex:none;padding:2px 6px;font-size:12px;color:var(--text-muted);}
+#context-menu .image-menu-name {display:flex;align-items:center;gap:8px;padding:6px 10px 8px;border-bottom:1px solid var(--border);font-size:13px;color:var(--text-muted);}
+#context-menu .image-menu-name span {flex:none;}
+#context-menu .image-menu-name input {width:150px;min-width:0;padding:3px 6px;background:var(--background-primary);border:1px solid var(--border);border-radius:4px;}
 
-/* 1.60：修"最上面有一个空框"——错误提示元素为空时不渲染（且尊重 [hidden]） */
+/* 修"最上面有一个空框"——错误提示元素为空时不渲染（且尊重 [hidden]） */
 #preferences .preference-error:empty,
 #preferences .preference-hint:empty,
 #preferences .sync-feedback:empty,
 #preferences .sync-status:empty {display:none;}
 
-/* 1.60：仿 Obsidian 分组——组标题在卡片外，卡片里只放行；行高与描述更接近 */
+/* 仿 Obsidian 分组——组标题在卡片外，卡片里只放行；行高与描述更接近 */
 #preferences .preference-card {margin:0 0 16px;padding:0 0 4px;}
 #preferences .preference-card:not(:has(> :not(h4,[hidden]))) {display:none;}
 #preferences .preference-group-title {margin:0 0 2px;padding:7px 0 6px;border-bottom:1px solid var(--border);font-size:13px;font-weight:600;color:var(--text-normal);}
@@ -603,15 +662,15 @@ body.ctrl-down .irtree-extracted {cursor:pointer;}
 #preferences .sync-key-controls {display:flex;gap:6px;align-items:center;flex-wrap:wrap;}
 #preferences .sync-key-controls input {width:min(200px,100%);}
 #preferences .preference-card:has(input[data-setting=enableShortTerm]:not(:checked)) .short-term-step {display:none;}
-/* 1.65：重复高亮的"选卡片"小框 */
+/* 重复高亮的"选卡片"小框 */
 #link-picker {position:fixed;z-index:60;min-width:220px;max-width:320px;padding:8px;border-radius:8px;
   background:#242424;border:1px solid #4a4a4a;box-shadow:0 12px 32px rgba(0,0,0,.45);}
 #link-picker p {margin:2px 4px 8px;font-size:12px;color:#9c9c9c;}
 #link-picker button {display:block;width:100%;text-align:left;padding:7px 9px;border-radius:6px;font-size:13px;color:#dcdcdc;background:transparent;}
 #link-picker button:hover {background:#333;}
-/* 1.69：移动到…（居中搜索框，仿 Obsidian Move file） */
+/* 移动到…（居中搜索框，仿 Obsidian Move file） */
 #move-picker {position:fixed;inset:0;z-index:70;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.45);}
-/* 1.72：固定高度，输入过滤后窗口不移动 */
+/* 固定高度，输入过滤后窗口不移动 */
 #move-picker .move-box {width:min(560px,92vw);height:min(560px,72vh);display:flex;flex-direction:column;
   background:#242424;border:1px solid #4a4a4a;border-radius:10px;box-shadow:0 24px 60px rgba(0,0,0,.5);padding:12px;}
 #move-picker .move-input {width:100%;padding:8px 10px;border-radius:6px;border:1px solid #4a4a4a;background:#2d2d2d;color:#e0e0e0;font-size:13px;}
@@ -619,48 +678,51 @@ body.ctrl-down .irtree-extracted {cursor:pointer;}
 #move-picker .move-row {display:block;width:100%;text-align:left;padding:6px 9px;border-radius:6px;font-size:13px;color:#c8c8c8;background:transparent;}
 #move-picker .move-row.is-active,#move-picker .move-row:hover {background:#333;color:#fff;}
 #move-picker .move-footer {margin:8px 2px 0;font-size:11px;color:#8a8a8a;}
-/* 1.76：同步页的本机地址列表 */
+/* 同步页的本机地址列表 */
 .sync-addresses {display:flex;flex-direction:column;gap:6px;margin:2px 0 10px;}
 .sync-address {text-align:left;padding:7px 10px;border-radius:6px;border:1px solid var(--border);background:var(--background-primary-alt);color:var(--text-normal);font:12.5px/1.5 var(--font-monospace);white-space:normal;overflow-wrap:anywhere;}
 .sync-address:hover {border-color:var(--text-accent);color:var(--text-normal);}
 
-/* 1.80（N3）：卡片状态徽标——右上角小字，替代顶部黄色提示 */
-/* 1.133：右缘跟随工作区；目录树收起后徽标跟着工作区新右缘，不再停在原位置 */
+/* 卡片状态徽标——右上角小字，替代顶部黄色提示 */
+/* 右缘跟随工作区；目录树收起后徽标跟着工作区新右缘，不再停在原位置 */
 #card-state-badge {position:fixed;top:42px;right:var(--workspace-right);z-index:30;
   padding:3px 9px;border-radius:999px;font-size:11.5px;letter-spacing:.02em;
   background:rgba(228,168,46,.16);color:#e4b04a;border:1px solid rgba(228,168,46,.45);pointer-events:auto;}
 #card-state-badge[hidden] {display:none;}
 
 
-/* 1.83（N16）：路径栏里的文件夹项——比卡片弱一点，可点击跳转 */
+/* 路径栏里的文件夹项——比卡片弱一点，可点击跳转 */
 #breadcrumbs .breadcrumb-folder {color:#a9a9a9;}
 #breadcrumbs .breadcrumb-folder:hover {color:#e0e0e0;}
 
 
-/* 1.89：答案未揭开时的布局——下半区（含分隔条与提示）整块不显示，题目占满全高。
+/* 答案未揭开时的布局——下半区（含分隔条与提示）整块不显示，题目占满全高。
    由 app.ts 的 applyStudyPresentation() 在 .test-card 上 toggle('answer-collapsed')。 */
 .test-card.answer-collapsed {grid-template-rows:minmax(0,1fr) !important;}
 .test-card.answer-collapsed .card-rule,
 .test-card.answer-collapsed .card-pane.answer {display:none !important;}
 
-/* 1.98（N1）：显示答案按钮按卡片复习状态着色——与计数行/浏览页状态同一套颜色 */
+/* 显示答案按钮按卡片复习状态着色——与计数行/浏览页状态同一套颜色 */
 .study-action.primary.state-new {border-color:rgba(126,175,255,.8);background:rgba(126,175,255,.16);color:#dbe9ff;}
 .study-action.primary.state-learning {border-color:rgba(237,143,146,.8);background:rgba(237,143,146,.16);color:#ffe4e5;}
 .study-action.primary.state-review {border-color:rgba(134,199,161,.8);background:rgba(134,199,161,.16);color:#e2f5ea;}
 
-/* 1.101：浏览卡片里不显示右上角状态徽标（那里用颜色区分状态就够了） */
+/* 浏览卡片里不显示右上角状态徽标（那里用颜色区分状态就够了） */
 body.browser-open #card-state-badge {display:none;}
 
-/* 1.101：状态配色（仿 Anki）——新卡蓝 / 学习中红 / 复习绿 / 待办中黄 / 停止灰 / 未完成灰 */
+/* 状态配色（仿 Anki）——新卡蓝 / 学习中红 / 复习绿 / 待办中黄 / 停止灰 / 未完成灰 */
 .browser-state.state-push {color:#e4b04a;}
 .browser-state.state-leech {color:#c98ad6;}
-/* 1.139：到期列按状态着色（新卡蓝 / 学习中红 / 复习绿 / 其它灰） */
+/* 到期列按状态着色（新卡蓝 / 学习中红 / 复习绿 / 其它灰） */
 .browser-due.state-new {color:#7eafff;}
 .browser-due.state-learning {color:#ed8f92;}
 .browser-due.state-review {color:#86c7a1;}
 .browser-due.state-suspended,.browser-due.state-stopped,.browser-due.state-empty {color:var(--text-faint);}
-/* 1.139：浏览编辑区改成「正面/背面」两个可折叠区块（仿 Anki），没有保存按钮 */
+/* 浏览编辑区改成「正面/背面」两个可折叠区块（仿 Anki），没有保存按钮 */
 #browser-editor {gap:8px;}
+.browser-attachment-editor {max-height:380px;min-width:0;overflow:auto;}
+.browser-attachment-editor .cm-scroller {padding:8px;}
+.browser-attachment-editor .cm-editor {font-size:inherit;}
 .browser-editor-section {border:1px solid var(--border);border-radius:6px;background:var(--background-primary);overflow:hidden;}
 .browser-editor-section > summary {padding:6px 10px;font-size:12px;font-weight:600;color:var(--text-muted);cursor:pointer;
   background:var(--background-primary-alt);list-style:none;display:flex;align-items:center;gap:6px;}
@@ -671,7 +733,7 @@ body.browser-open #card-state-badge {display:none;}
   padding:8px 10px;font:13px/1.55 var(--font-text);resize:vertical;min-height:120px;}
 .browser-editor-section textarea:focus {outline:1px solid var(--accent);outline-offset:-1px;}
 .browser-editor-head span {font-size:13px;font-weight:600;color:var(--text-normal);}
-/* 1.140：编辑区 Markdown 工具条（仿 Anki 的字段工具条，先做文本格式这一排） */
+/* 编辑区 Markdown 工具条（仿 Anki 的字段工具条，先做文本格式这一排） */
 .browser-editor-toolbar {display:flex;flex-wrap:wrap;gap:3px;padding:3px 0 1px;}
 .browser-editor-toolbar button {min-width:26px;height:24px;padding:0 6px;border:1px solid var(--border);border-radius:4px;
   background:var(--background-primary-alt);color:var(--text-muted);font-size:12px;line-height:1;cursor:pointer;}
@@ -690,7 +752,7 @@ body.browser-open #card-state-badge {display:none;}
 #browser-filters .state-dot.state-conflict {background:#dd885a;}
 
 
-/* 1.108：当前卡片状态的数字用**同色下划线**标出（不加粗、不放大、其余数字不变淡） */
+/* 当前卡片状态的数字用**同色下划线**标出（不加粗、不放大、其余数字不变淡） */
 #study-counts .count-new.is-current,
 #study-counts .count-learning.is-current,
 #study-counts .count-review.is-current {text-decoration:underline;text-decoration-thickness:1px;text-underline-offset:3px;}
@@ -699,16 +761,20 @@ body.browser-open #card-state-badge {display:none;}
 #study-counts .count-review.is-current {text-decoration-color:#86c7a1;}
 
 
-/* 1.103：浏览卡片 = 左表格 + 右编辑区（仿 Anki 浏览器）
-   1.135：中间加可拖动分隔线，编辑区宽度存 --browser-editor-width（默认 360，拖动后记忆） */
+/* 浏览卡片 = 左表格 + 右编辑区（仿 Anki 浏览器）
+   中间加可拖动分隔线，编辑区宽度存 --browser-editor-width（默认 360，拖动后记忆） */
 .browser-body {display:flex;flex:1;min-height:0;min-width:0;position:relative;}
 #browser-table-scroll {flex:1;min-width:0;}
 #browser-editor {width:var(--browser-editor-width,360px);min-width:240px;max-width:72%;flex:none;border-left:1px solid var(--border);background:var(--background-secondary);
   display:flex;flex-direction:column;gap:10px;padding:10px 12px;overflow:auto;}
 #browser-editor[hidden] {display:none;}
-#browser-editor-rule {display:none;flex:none;width:8px;cursor:col-resize;touch-action:none;background:var(--background-secondary);border-inline:1px solid var(--border);}
+#browser-editor-rule {display:none;flex:none;width:var(--split-size);cursor:col-resize;touch-action:none;}
 .browser-body:has(#browser-editor:not([hidden])) #browser-editor-rule {display:block;}
-#browser-editor-rule:hover,#browser-editor-rule:focus-visible {background:var(--accent);}
+:is(#resize,#tree-divider,.card-rule,#browser-rule,#browser-editor-rule) {position:relative;}
+:is(#resize,#tree-divider,.card-rule,#browser-rule,#browser-editor-rule)::before {content:"";position:absolute;background:var(--border);pointer-events:none;}
+:is(#resize,#browser-editor-rule)::before {inset-block:0;inset-inline-start:50%;width:1px;}
+:is(#tree-divider,.card-rule,#browser-rule)::before {inset-inline:0;inset-block-start:50%;height:1px;}
+:is(#resize,#tree-divider,.card-rule,#browser-rule,#browser-editor-rule):is(:hover,:active,:focus-visible,.is-dragging)::before {background:var(--accent);}
 .browser-editor-head {display:flex;align-items:center;gap:8px;}
 .browser-editor-head span {flex:1;font-size:13px;font-weight:600;color:var(--text-normal);}
 .browser-editor-head button {border:1px solid var(--border);background:var(--background-primary-alt);color:var(--text-normal);
@@ -722,21 +788,21 @@ body.browser-open #card-state-badge {display:none;}
 .browser-editor-hint {font-size:11.5px;color:var(--text-faint);}
 
 
-/* 1.104：菜单项右侧的快捷键名（用户要求"选项旁边写快捷键名字"） */
+/* 菜单项右侧的快捷键名 */
 #study-more-menu button {display:flex;align-items:center;gap:14px;justify-content:space-between;}
 .menu-shortcut {color:var(--text-faint);font-size:11.5px;letter-spacing:.02em;}
 
-/* 1.107：卡片信息——复习类型徽标（仿 Anki 的红/蓝/绿）+ 遗忘曲线 */
+/* 卡片信息——复习类型徽标（仿 Anki 的红/蓝/绿）+ 遗忘曲线 */
 .card-type {font-size:12px;font-weight:600;}
 .card-type.is-new {color:#7eafff;}
 .card-type.is-learn {color:#7eafff;}
 .card-type.is-review {color:#86c7a1;}
 .card-type.is-relearn {color:#ed8f92;}
-/* 1.210：复习记录里的排程事件（待办暂停 / 返回复习 / 搁置 / 留存判定）不是评分行，用灰色区分 */
+/* 复习记录里的排程事件（待办暂停 / 返回复习 / 搁置 / 留存判定）不是评分行，用灰色区分 */
 .card-type.is-event {color:#9a9a9a;font-weight:500;}
 .forgetting-curve {width:100%;height:auto;max-height:320px;display:block;}
 
-/* 1.109：同步反馈——记录列表 */
+/* 同步反馈——记录列表 */
 .sync-log {margin-top:10px;border-top:1px solid var(--border);padding-top:8px;}
 .sync-log-title {font-size:12px;color:var(--text-muted);margin-bottom:6px;font-weight:600;}
 .sync-log-line {display:flex;flex-wrap:wrap;gap:3px 10px;align-items:baseline;font-size:12px;line-height:1.5;padding:4px 0;border-bottom:1px solid var(--border);}
@@ -747,47 +813,47 @@ body.browser-open #card-state-badge {display:none;}
 .sync-status-line.info .sync-status-value {color:#7eafff;}
 
 
-/* 1.111：同步状态配色——正常绿、出错红、进行中蓝 */
+/* 同步状态配色——正常绿、出错红、进行中蓝 */
 .sync-status-line.ok .sync-status-value {color:#86c7a1;}
 .sync-status-value {min-width:0;overflow-wrap:anywhere;}
 
 
-/* 1.114：同步页顶部工具条与冲突文件列表 */
+/* 同步页顶部工具条与冲突文件列表 */
 .sync-topbar {display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;margin-bottom:10px;}
 .sync-topbar button {border:1px solid var(--border);background:var(--background-primary-alt);color:var(--text-normal);border-radius:6px;padding:5px 12px;font-size:12.5px;cursor:pointer;}
 .sync-topbar button.primary {background:var(--accent);color:#fff;border-color:transparent;}
 .sync-conflict-detail {font-size:11.5px;color:var(--text-muted);white-space:pre-wrap;margin:4px 0 8px 14px;}
 
-/* 1.150：滚动条照 Qt/Anki 的样式——有独立凹槽、滑块是方角窄条，不是浮在内容上的圆药丸 */
+/* 滚动条照 Qt/Anki 的样式——有独立凹槽、滑块是方角窄条，不是浮在内容上的圆药丸 */
 *::-webkit-scrollbar {width:12px;height:12px;background:var(--background-primary-alt);}
 *::-webkit-scrollbar-track {background:var(--background-primary-alt);}
 *::-webkit-scrollbar-thumb {background:#666;border-radius:5px;border:2px solid var(--background-primary-alt);}
 *::-webkit-scrollbar-thumb:hover,*::-webkit-scrollbar-thumb:active {background:#8a8a8a;}
 *::-webkit-scrollbar-corner {background:var(--background-primary-alt);}
 #browser-table-scroll::-webkit-scrollbar {width:13px;height:13px;}
-/* 1.157：重来目标小菜单（浮在「重来」按钮上方） */
+/* 重来目标小菜单（浮在「重来」按钮上方） */
 .again-menu {position:fixed;z-index:60;min-width:260px;max-width:420px;max-height:50vh;overflow:auto;padding:10px 12px;
   border:1px solid var(--border);border-radius:8px;background:var(--background-secondary);box-shadow:0 12px 36px #0009;}
 .again-menu-title {margin:0 0 8px;font-size:12px;color:var(--text-muted);}
 .again-menu-row {display:flex;align-items:center;gap:8px;padding:4px 2px;font-size:13px;cursor:pointer;}
 .again-menu-row input {accent-color:var(--accent);}
 .again-menu-hint {margin:8px 0 0;font-size:11px;color:var(--text-faint);}
-/* 1.161：自动播放时的圆形播放键（替代原生控件，无动画可闪）；点开才显示进度条 */
+/* 自动播放时的圆形播放键（替代原生控件，无动画可闪）；点开才显示进度条 */
 .media-play {width:30px;height:30px;border-radius:50%;border:0;background:#f2f2f2;
   color:#111;font-size:14px;line-height:1;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;flex:none;}
 .media-play:hover {background:#d8d8d8;}
-/* 1.164：表格行用 content-visibility 跳过屏幕外行的渲染（Chromium 特性），几千行滚动不卡 */
+/* 表格行用 content-visibility 跳过屏幕外行的渲染（Chromium 特性），几千行滚动不卡 */
 #browser-table tbody tr {content-visibility:auto;contain-intrinsic-size:auto 30px;}
-/* 1.166：拖动表格/编辑区分隔线时先把表格隐藏——4722 行的重排会让拖动卡死，松手后再显示 */
+/* 拖动表格/编辑区分隔线时先把表格隐藏——4722 行的重排会让拖动卡死，松手后再显示 */
 body.browser-dragging #browser-table {visibility:hidden;}
 body.browser-dragging #browser-scrollbar {visibility:hidden;}
-/* 1.167：虚拟表格——固定表头一张表，表体用 canvas 撑高度、绝对定位只画可视行 */
+/* 虚拟表格——固定表头一张表，表体用 canvas 撑高度、绝对定位只画可视行 */
 #browser-table-head {width:100%;table-layout:fixed;border-collapse:collapse;flex:none;background:var(--background-secondary);}
 #browser-table-head th {text-align:left;font-weight:500;color:var(--text-muted);border-bottom:1px solid var(--border);position:relative;}
 #browser-table-canvas {position:relative;width:100%;}
 #browser-table {position:absolute;left:0;right:0;top:0;width:100%;table-layout:fixed;border-collapse:collapse;}
 #browser-table tbody tr {content-visibility:visible;}
-/* 1.169：卡片属性（标签）面板 */
+/* 卡片属性（标签）面板 */
 #card-tags {position:relative;}
 #card-tags-panel {position:absolute;right:0;bottom:44px;width:240px;padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--background-secondary);box-shadow:0 10px 30px #0008;z-index:60;}
 #card-tags-panel[hidden] {display:none;}
@@ -797,7 +863,7 @@ body.browser-dragging #browser-scrollbar {visibility:hidden;}
 .card-tag button {border:0;background:transparent;color:var(--text-muted);cursor:pointer;padding:0 2px;font-size:12px;}
 .card-tag button:hover {color:var(--text-normal);}
 #card-tags-input {width:100%;border:1px solid var(--border);border-radius:5px;padding:5px 8px;background:var(--background-primary-alt);color:var(--text-normal);font:12px/1.5 var(--font-text);}
-/* 1.171：浏览卡片表头/表格外观收拾一下——表头有高度、只有横向分隔线、悬停/选中行更清楚 */
+/* 浏览卡片表头/表格外观收拾一下——表头有高度、只有横向分隔线、悬停/选中行更清楚 */
 #browser-table-head th {height:32px;padding:0 10px;font-weight:500;font-size:12px;color:var(--text-muted);border:0;border-bottom:1px solid var(--border);background:var(--background-secondary);white-space:nowrap;}
 #browser-table-head th:hover {color:var(--text-normal);}
 #browser-table-head .browser-th-sort {opacity:.85;}
@@ -806,21 +872,20 @@ body.browser-dragging #browser-scrollbar {visibility:hidden;}
 #browser-table tbody tr:hover td {background:#ffffff06;}
 #browser-table tbody tr.is-selected td,#browser-table tbody tr[aria-selected="true"] td {background:var(--background-active);}
 #browser-table td.browser-state,#browser-table td.browser-due {font-variant-numeric:tabular-nums;}
-/* 1.172：编辑区顶部标题改成可直接编辑的输入框，外观仍像标题 */
+/* 编辑区顶部标题改成可直接编辑的输入框，外观仍像标题 */
 #browser-editor-title {width:100%;border:0;background:transparent;color:var(--text-normal);font:600 15px/1.5 var(--font-text);padding:2px 0;}
 #browser-editor-title:focus {outline:1px solid var(--border);border-radius:4px;background:var(--background-primary-alt);}
-/* 1.172：编辑区分区布局——标题/工具条固定，正面与背面平分剩余高度；去掉底部文字注解 */
+/* 编辑区分区布局——标题/工具条固定，正面与背面平分剩余高度；去掉底部文字注解 */
 #browser-editor {display:grid;grid-template-rows:auto auto minmax(0,1fr) minmax(0,1fr);gap:8px;}
 #browser-editor-back[hidden] {display:none;}
 .browser-editor-section {display:flex;flex-direction:column;min-height:0;}
 .browser-editor-section > summary {flex:none;}
 .browser-editor-section > textarea {flex:1;min-height:0;resize:none;}
-#browser-editor-hint {display:none;}/* 1.176：浅色主题按 Obsidian/Anki 的观感重调并补齐组件配色 */
+#browser-editor-hint {display:none;}/* 浅色主题按 Obsidian/Anki 的观感重调并补齐组件配色 */
 :root[data-theme="light"] dialog,:root[data-theme="light"] #context-menu {background:#fff;border-color:var(--border);box-shadow:0 18px 44px #0000001f;}
 :root[data-theme="light"] ::-webkit-scrollbar {background:#eceef1;}
 :root[data-theme="light"] ::-webkit-scrollbar-thumb {background:#c2c7cf;border-color:#eceef1;}
 :root[data-theme="light"] ::-webkit-scrollbar-thumb:hover {background:#a9b0ba;}
-:root[data-theme="light"] #action-rail {background:#f2f3f5;border-left-color:var(--border);}
 :root[data-theme="light"] #action-rail button {color:#5a6169;}
 :root[data-theme="light"] #action-rail button:hover {background:#e6e8ec;}
 :root[data-theme="light"] #browser-table-head th {background:#eef0f3;}
@@ -831,29 +896,25 @@ body.browser-dragging #browser-scrollbar {visibility:hidden;}
 :root[data-theme="light"] .study-action:hover {background:#dfe2e6;}
 :root[data-theme="light"] .media-play {background:#fff;border:1px solid #dcdde1;color:#222;}
 :root[data-theme="light"] .card-tag {background:#f2f3f5;border-color:var(--border);}
-/* 1.176：外观页的自定义样式输入框 */
+/* 外观页的自定义样式输入框 */
 .preference-css {width:100%;min-height:96px;resize:vertical;border:1px solid var(--border);border-radius:6px;padding:8px;background:var(--background-primary-alt);color:var(--text-normal);font:12px/1.5 var(--font-monospace);}
-/* 1.177：浅色主题对照 Obsidian Light 再收一遍外壳——顶栏/侧栏/树/底栏/输入框 */
-:root[data-theme="light"] #topbar {background:#f7f7f7;border-bottom:1px solid #e7e7e7;}
+/* 浅色主题对照 Obsidian Light 再收一遍外壳——顶栏/侧栏/树/底栏/输入框 */
+:root[data-theme="light"] #topbar {border-bottom-color:#e7e7e7;}
 :root[data-theme="light"] #topbar button {color:#4a4f57;}
 :root[data-theme="light"] #breadcrumbs button,:root[data-theme="light"] #breadcrumbs .current {color:#2b2f36;}
-:root[data-theme="light"] #sidebar,:root[data-theme="light"] #directory-pane {background:#f7f7f7;border-color:#e7e7e7;}
-:root[data-theme="light"] #tree-viewport {background:#f7f7f7;}
 :root[data-theme="light"] .tree-label {color:#33373d;}
-:root[data-theme="light"] .tree-row:hover {background:#ececec;}
 :root[data-theme="light"] .tree-row.is-selected,:root[data-theme="light"] .tree-row[aria-selected="true"] {background:#e4e4e6;}
-:root[data-theme="light"] #card-relations {background:#f7f7f7;border-top-color:#e7e7e7;}
-:root[data-theme="light"] #study-controls {background:#f7f7f7;border-top:1px solid #e7e7e7;}
+:root[data-theme="light"] #study-controls {border-top-color:#e7e7e7;}
 :root[data-theme="light"] input,:root[data-theme="light"] textarea,:root[data-theme="light"] select {background:#fff;color:#222428;border-color:#dcdde1;}
 :root[data-theme="light"] button {color:#33373d;}
 :root[data-theme="light"] .browser-toolbar input,:root[data-theme="light"] .browser-editor-section textarea {background:#fff;}
 :root[data-theme="light"] .browser-footer {background:#f7f7f7;border-top:1px solid #e7e7e7;}
-/* 1.181：右上角短暂提示（待办暂停 / leech） */
+/* 右上角短暂提示（待办暂停 / leech） */
 .card-notice-flash {position:fixed;top:44px;right:18px;z-index:80;padding:8px 14px;border-radius:8px;
   background:var(--background-secondary);border:1px solid var(--border);color:var(--text-normal);
   box-shadow:0 10px 26px #0006;font-size:13px;pointer-events:none;animation:card-notice-in .18s ease-out;}
 @keyframes card-notice-in {from{opacity:0;transform:translateY(-6px);}to{opacity:1;transform:none;}}
-/* 1.183：垃圾桶——类型徽标、行分隔、内容预览 */
+/* 垃圾桶——类型徽标、行分隔、内容预览 */
 .trash-kind {flex:none;padding:1px 6px;border-radius:4px;font-size:11px;border:1px solid var(--border);color:var(--text-muted);background:var(--background-primary-alt);}
 .trash-kind-folder {color:#c9a227;border-color:#c9a22755;}
 .trash-kind-topic {color:#6aa9ff;border-color:#6aa9ff55;}

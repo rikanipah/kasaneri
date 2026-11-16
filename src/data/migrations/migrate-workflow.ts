@@ -10,7 +10,7 @@ export function migrateWorkflow(repository:Repository){
  INSERT OR IGNORE INTO reading_state(node_id,due_at,enabled) SELECT n.id,${now},CASE WHEN r.enabled=0 THEN 1 ELSE 0 END
  FROM nodes n JOIN review_cards r ON r.node_id=n.id WHERE n.kind='cloze' AND n.deleted_at IS NULL;
  PRAGMA user_version=6;`);
- // 1.133：这里原本强制 enableShortTerm=false（1.x 曾关闭学习步骤）。1.133 恢复 Anki 式三态后
+ // 这里原本强制 enableShortTerm=false（1.x 曾关闭学习步骤）。旧版 恢复 Anki 式三态后
  // 不再改写设置，只把旧值清掉，让全局设置回到当前默认（学习步骤启用）。
  const settings=repository.getSetting('studySettings') as any;
  if(settings&&'enableShortTerm' in settings){const next={...settings};delete next.enableShortTerm;repository.setSetting('studySettings',next);}

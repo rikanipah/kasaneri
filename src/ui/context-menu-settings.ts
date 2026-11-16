@@ -7,7 +7,7 @@ const memory=['新建检测子卡片','关联卡片…'];
 const conversions=['转换为主题','转换为提取','转换为检测卡'];
 const tools=['运行启动命令','设置启动命令…','内嵌终端'];
 const review=['卡片信息','记录一次遗忘','重置记忆信息…'];
-const folders=[...common,'进入复习','新建子文件夹','新建主题',...createCards,'牌组统计','复习设置','删除文件夹'];
+const folders=[...common,'进入复习','新建子文件夹','新建主题',...createCards,'牌组统计','设置','删除文件夹'];
 const cards=(kind:string)=>[...common,...(kind==='主题'?['新建子主题']:[]),...createCards,...(kind==='检测卡'?memory:[]),
   ...conversions.filter(label=>label!=='转换为'+kind),...(kind==='检测卡'?review:['卡片信息']),
   ...tools,...(kind==='检测卡'?['加入／暂停复习','搁置／恢复待办']:['搁置／恢复待办']),'删除卡片'];
@@ -20,8 +20,8 @@ export const contextMenus={
   cloze:['目录树检测卡','右键目录树中的检测卡，包含记录遗忘和重置记忆。',cards('检测卡')],
   browser:['浏览卡片','右键浏览表格中的卡片。选项随卡片类型变化。',[...new Set([...cards('检测卡'),...cards('主题'),'冲突文件…','恢复卡片'])]],
   relation:['记忆树','右键记忆树中的检测卡或关联卡片。',['打开','在目录树中定位','卡片信息',...memory,'解除关系']],
-  editor:['正文或答案','在可编辑的正文或答案区域右键。',['插入附件…']],
-  image:['正文图片','在可编辑的库内图片上右键。',['图片遮挡…']],
+  editor:['正文或答案','在可编辑的正文或答案区域右键。',['插入附件…','插入外部文件链接…']],
+  image:['正文图片','在可编辑的库内图片上右键。',['打开原图','复制图片','在系统文件管理器中打开','图片遮挡…','移除图片引用','从正文移除附件']],
 } satisfies Record<string,[string,string,string[]]>;
 
 type MenuKind=keyof typeof contextMenus;
@@ -33,8 +33,9 @@ export async function loadContextMenus(){
 
 function layout(kind:MenuKind):Layout{
   const defaults=contextMenus[kind][2],saved=layouts[kind];
-  const order=Array.isArray(saved?.order)?saved.order.filter(id=>defaults.includes(id)):[];
-  return {order:[...new Set([...order,...defaults])],hidden:Array.isArray(saved?.hidden)?saved.hidden:[]};
+  const currentId=(id:string)=>kind==='folder'&&id==='复习设置'?'设置':id;
+  const order=Array.isArray(saved?.order)?saved.order.map(currentId).filter(id=>defaults.includes(id)):[];
+  return {order:[...new Set([...order,...defaults])],hidden:Array.isArray(saved?.hidden)?saved.hidden.map(currentId):[]};
 }
 
 export function arrangeContextMenu(menu:HTMLElement,kind:MenuKind):boolean{

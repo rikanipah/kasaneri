@@ -1,10 +1,12 @@
-import { app, BrowserWindow, dialog, ipcMain, protocol, shell, type WebContents } from 'electron';
+import { app, BrowserWindow, ClipboardItem, clipboard, dialog, ipcMain, protocol, shell, type WebContents } from 'electron';
 import { Worker } from 'node:worker_threads';
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawn } from 'node:child_process';
-import type { EditorSlot } from '../core/model';
+import sharp from 'sharp';
+import type { Asset, EditorSlot } from '../core/model';
 import { assetHandler, importAttachments, type IncomingAttachment } from './assets';
 import { createBackupService, defaultBackupConfig } from './backup';
 import { DatabaseClient } from './database-client';
@@ -17,12 +19,12 @@ import { existingLibrary, readStartupConfiguration, saveStartupConfiguration, sh
 import { LocalUiState } from './local-state';
 import { DEFAULT_LOCALE, getLocale, parseLocale, setLocale, t } from '../core/i18n';
 
-// 1.149：Windows 11 的「自动隐藏滚动条」会让 Chromium 用 overlay 滚动条——鼠标悬停时滑块会临时变宽，
+// Windows 11 的「自动隐藏滚动条」会让 Chromium 用 overlay 滚动条——鼠标悬停时滑块会临时变宽，
 // 盖住旁边内容。这里关掉 overlay 滚动条，让样式表里的固定宽度滚动条始终生效。
 app.commandLine.appendSwitch('disable-features','OverlayScrollbar');
-// 1.178：Linux 上让 Electron 用 Wayland（niri 下平铺/最大化才正常），并启用 Wayland 输入法
+// Linux 上让 Electron 用 Wayland（niri 下平铺/最大化才正常），并启用 Wayland 输入法
 if(process.platform==='linux'){
-  // 1.194：Electron 的 ozone 平台在 JS 执行前就定了，这里只能设 hint；真正的 Wayland 参数
+  // Electron 的 ozone 平台在 JS 执行前就定了，这里只能设 hint；真正的 Wayland 参数
   // 由 Linux 包的 run-linux.sh 在启动命令行加上（有 WAYLAND_DISPLAY 时用 --ozone-platform=wayland）。
   app.commandLine.appendSwitch('ozone-platform-hint','auto');
   app.commandLine.appendSwitch('enable-wayland-ime');
@@ -38,15 +40,15 @@ const defaultDataDir=defaultDataDirectory(appDirectory);
 const configuredDataDir=process.env.READING_DATA_DIR;
 const dataDirectoryOverride=configuredDataDir&&existsSync(configuredDataDir)?realpathSync(configuredDataDir):configuredDataDir;
 let dataDir=dataDirectoryOverride||defaultDataDir;
-// ===== 1.7 ⑤：数据目录分离 =====
+// ===== 数据目录分离 =====
 // data\library\ 是"同步单元"：资料库 SQLite + 附件 + 可重建缓存（备份/同步只搬这个文件夹）。
 // data\window-profile 是 Chromium 运行时缓存，永远不参与同步。首启自动把旧布局迁移进来。
 let libraryDir=join(dataDir,'library');
-// 1.68：data 目录只保留「资料库 / 垃圾桶 / 快照备份」；窗口缓存与设备 id 属于本机状态，
+// data 目录只保留「资料库 / 垃圾桶 / 快照备份」；窗口缓存与设备 id 属于本机状态，
 // 挪到同级 state 目录，避免被误当成用户数据备份或同步出去。
 const stateDir=join(dirname(dataDir),'state');
 const startupFile=join(stateDir,'startup.json');
-// 1.200：本机界面状态（聚焦的卡片等），不跟资料库/快照/同步走。
+// 本机界面状态（聚焦的卡片等），不跟资料库/快照/同步走。
 const uiState=new LocalUiState(stateDir);
 function installerLocale(){
   try{return parseLocale(readFileSync(join(appDirectory,'install-language.txt'),'utf8').trim());}
@@ -58,7 +60,7 @@ const writeLog=installApplicationLogging(stateDir);
 migrateStateFiles(dataDir,stateDir);
 app.setPath('userData',join(stateDir,'window-profile'));
 app.setName('Kasaneri');
-// 1.26：浏览卡片里双击打开的独立编辑窗口（每个窗口只编辑一张卡）
+// 浏览卡片里双击打开的独立编辑窗口（每个窗口只编辑一张卡）
 const cardWindows=new Set<BrowserWindow>();
 const approvedCardClosures=new WeakSet<BrowserWindow>();
 const editorCards=new Map<number,Map<EditorSlot,Set<string>>>();
@@ -137,7 +139,7 @@ ipcMain.handle('reading:editor-card',async(event,slot:unknown,id:unknown)=>{
   }
   const cards=slots.get(slot)??new Set<string>();
   cards.add(id);slots.set(slot,cards);
-  return call('get',{id});
+  return call('editorGet',{id});
 });
 ipcMain.on('reading:editor-active',(event,slot:unknown,id:unknown)=>{
   if(!isOurWindow(event.sender)||!editorSlot(slot)||(id!==null&&typeof id!=='string'))return;
@@ -170,13 +172,13 @@ async function closeDatabase():Promise<void>{
   await client?.close();
 }
 
-const allowed=new Set(['info','children','get','path','anchors','save','create','rename','move','restoreMove','remove','simulateWorkload',
+const allowed=new Set(['info','children','directoryBranches','get','path','anchors','save','create','rename','move','restoreMove','remove','simulateWorkload',
   'moveCards','restoreMovedCards','setStudyEnabledBatch','restoreStudyEnabledBatch',
   'createMemoryChild','cardRelations','memoryTree','searchRelatedCards','addRelatedCard','removeCardRelation',
   'searchPrerequisites','setPrerequisite','reviewAgainDependents','recordForgotten','resetMemory','saveImageOcclusion','undoImageOcclusion',
   'undoCreation','cardTags','addCardTag','removeCardTag','search','settingGet','settingSet','asset','folders','configGet','configSave','folderCounts','nodeStudy',
-  'setPriority','setStudyEnabled','buryCard','setCardHold','reviewStart','reviewStop','reviewRefresh','reviewGrade','reviewUndo','catalog','directoryPath','deckConfig','deckConfigSave','setPushEnabled','setReadingPosition','changeKind','cardInfo','statistics','readingStatistics','assetUsage','assetTrashUnused','assetTrashList','assetRestore','assetPurge','nodeMetadata','optimizeDeck','optimizeDeckApply','trashList','trashRestore','trashPurge','trashCleanup','retentionReport','optimizeDeckList','cardWindow','openPath']);
-// 1.200：本机界面状态的读写（state/ui-state.json，各机器独立）。
+  'setPriority','setStudyEnabled','buryCard','setCardHold','reviewStart','reviewStop','reviewRefresh','reviewGrade','reviewUndo','catalog','directoryPath','deckConfig','deckConfigSave','setPushEnabled','setReadingPosition','changeKind','cardInfo','statistics','readingStatistics','assetUsage','assetTrashUnused','assetTrashList','assetRestore','assetPurge','nodeMetadata','optimizeDeck','optimizeDeckApply','trashList','trashRestore','trashPurge','trashCleanup','retentionReport','optimizeDeckList','cardWindow','openPath','pickFileLink','openFileLink','openImageAsset','copyImageAsset','revealAttachment']);
+// 本机界面状态的读写（state/ui-state.json，各机器独立）。
 ipcMain.handle('reading:ui-state-get',(event,key:unknown)=>{
   if(!isOurWindow(event.sender)||typeof key!=='string'||!key||key.length>64)throw Error(t('无效的本机状态请求。'));
   return uiState.get(key);
@@ -206,13 +208,51 @@ ipcMain.handle('reading:request',async(event,action,payload)=>{
   }
   // 独立编辑窗口也走同一个 worker。
   if(!isOurWindow(event.sender)||!allowed.has(action))throw Error(t('无效请求。'));
-  // 1.26：打开独立编辑窗口是主进程行为，不进 worker。
+  // 打开独立编辑窗口是主进程行为，不进 worker。
   if(action==='cardWindow'){openCardWindow(String(payload?.id||''));return true;}
-  // 1.30：在文件管理器里打开某个目录（备份文件夹）
+  // 在文件管理器里打开某个目录（备份文件夹）
   if(action==='openPath'){const target=String((payload as any)?.path||'');if(target)await shell.openPath(target);return true;}
+  if(action==='pickFileLink'){
+    const owner=windowOf(event.sender);
+    if(!owner)return null;
+    const result=await dialog.showOpenDialog(owner,{title:t('选择要链接的文件'),properties:['openFile']});
+    const path=result.filePaths[0];
+    return result.canceled||!path?null:{name:basename(path),url:pathToFileURL(path).href};
+  }
+  if(action==='openFileLink'){
+    let path:string;
+    try{
+      if(typeof payload?.url!=='string'||!/^file:\/\//i.test(payload.url))throw Error();
+      path=fileURLToPath(new URL(payload.url));
+    }catch{throw Error(t('无效的本地文件链接。'));}
+    const error=await shell.openPath(path);
+    if(error)throw Error(t('无法打开外部文件：{0}',error));
+    return;
+  }
+  if(action==='openImageAsset'||action==='copyImageAsset'||action==='revealAttachment'){
+    const id=payload?.id;
+    if(typeof id!=='string'||!/^[a-f0-9]{64}$/.test(id))throw Error(t('附件缺失'));
+    const asset=await call<Asset|null>('asset',{id});
+    if(!asset||(action!=='revealAttachment'&&!asset.mime.startsWith('image/')))throw Error(t('附件缺失'));
+    const file=join(libraryDir,'assets',asset.relativePath);
+    if(action==='revealAttachment'){
+      if(!existsSync(file))throw Error(t('附件缺失'));
+      shell.showItemInFolder(file);
+      return;
+    }
+    if(action==='copyImageAsset'){
+      const bytes=await sharp(file).rotate().png().toBuffer();
+      const png=new Blob([new Uint8Array(bytes)],{type:'image/png'});
+      await clipboard.write([new ClipboardItem({'image/png':png})]);
+    }else{
+      const error=await shell.openPath(file);
+      if(error)throw Error(t('无法打开外部文件：{0}',error));
+    }
+    return;
+  }
   const result=await call(action,payload);
-  // 1.133：独立「添加卡片」等子窗口新建内容后，通知主窗口刷新目录树与计数（否则要等下次数同步才看到）
-  // 1.136：带上新卡所在父级，主窗口只刷新那一个分支，避免整棵树重建造成的闪动
+  // 独立「添加卡片」等子窗口新建内容后，通知主窗口刷新目录树与计数（否则要等下次数同步才看到）
+  // 带上新卡所在父级，主窗口只刷新那一个分支，避免整棵树重建造成的闪动
   if(action==='create'&&!window.isDestroyed()&&event.sender!==window.webContents)
     window.webContents.send('reading:synced-content',true,String((payload as any)?.parentId||'')||null,String((result as any)?.node?.id||'')||null);
   return result;
@@ -224,23 +264,23 @@ ipcMain.handle('reading:import-files',async(event,files:IncomingAttachment[])=>{
 });
 ipcMain.on('reading:window',(event,action)=>{
   const target=windowOf(event.sender);if(!target)return;
-  // 1.178：Linux（尤其 niri/Wayland 平铺）没有最小化语义，忽略而不是卡住窗口
+  // Linux（尤其 niri/Wayland 平铺）没有最小化语义，忽略而不是卡住窗口
   if(action==='minimize'&&process.platform!=='linux')target.minimize();
   if(action==='maximize')target.isMaximized()?target.unmaximize():target.maximize();
   if(action==='close')target.close();
 });
-// ===== 1.26：为某张卡片打开独立编辑窗口 =====
+// ===== 为某张卡片打开独立编辑窗口 =====
 // 浏览卡片里双击一行 → 这里新建一个 BrowserWindow，用 ?card=<id> 告诉渲染层"只编辑这张卡"。
 // 子窗口与主窗口共用同一个 worker（同一份数据库），界面走 solo 布局（隐藏目录树与功能栏）。
-// 1.133：子窗口统一走这一条路径——卡片编辑（?card=）、浏览卡片（?browser=1）、添加卡片（?add=1）。
+// 子窗口统一走这一条路径——卡片编辑（?card=）、浏览卡片（?browser=1）、添加卡片（?add=1）。
 function openChildWindow(key:string,query:Record<string,string>,size:{width:number;height:number;minWidth:number;minHeight:number}){
   for(const child of cardWindows){if(child.isDestroyed()){cardWindows.delete(child);continue;}}
   const existing=[...cardWindows].find(child=>child.getTitle()===key);
   if(existing&&!existing.isDestroyed()){existing.show();existing.focus();return;}
-  // 1.133：子窗口先把深色窗框显示出来（窗口本身很便宜），内容加载期间不再是"点了没反应"。
+  // 子窗口先把深色窗框显示出来（窗口本身很便宜），内容加载期间不再是"点了没反应"。
   const child=new BrowserWindow({...size,frame:false,backgroundColor:'#1e1e1e',show:false,
     webPreferences:{preload:join(__dirname,'preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,
-      // 1.88（N17）：允许自动播放（否则 Chromium 会拦截无手势的 play()）
+      // 允许自动播放（否则 Chromium 会拦截无手势的 play()）
       autoplayPolicy:'no-user-gesture-required'}});
   child.removeMenu();child.setTitle(key);
   child.webContents.setWindowOpenHandler(({url})=>{if(/^https?:\/\//i.test(url))shell.openExternal(url);return {action:'deny'};});
@@ -259,10 +299,10 @@ function openChildWindow(key:string,query:Record<string,string>,size:{width:numb
 function openCardWindow(id:string){
   openChildWindow('IR-card-'+id,{card:id},{width:920,height:760,minWidth:520,minHeight:420});
 }
-// 1.133：浏览卡片与「添加卡片」各自独立成窗，主窗口的工作区不被占用，也不会闪。
+// 浏览卡片与「添加卡片」各自独立成窗，主窗口的工作区不被占用，也不会闪。
 function openBrowserWindow(status?:'conflict',cardId?:string|null){
   const child=openChildWindow('IR-browser',{browser:'1',...(status?{status}:{}),...(cardId?{select:cardId}:{})},{width:1280,height:840,minWidth:880,minHeight:520});
-  // 1.136：用户要求浏览卡片默认全屏——新窗口直接最大化（窗口还没显示，不会出现"小窗变大窗"）
+  // 浏览卡片默认全屏——新窗口直接最大化（窗口还没显示，不会出现"小窗变大窗"）
   if(child&&!child.isDestroyed())child.maximize();
 }
 function openAddCardWindow(folderId:string|null){
@@ -288,7 +328,7 @@ ipcMain.handle('reading:add-card-window',(event,payload:unknown)=>{
   return true;
 });
 ipcMain.on('reading:card-window-close',event=>closeCardWindowFor(event.sender));
-// ===== 1.6 ⑦：从卡片启动外部程序/终端 =====
+// ===== 从卡片启动外部程序/终端 =====
 // 渲染层在沙盒（sandbox:true, nodeIntegration:false）里，只有这里能 spawn。
 // 安全边界（不要放松）：
 //   1. 只接受本窗口发来的请求；
@@ -374,7 +414,7 @@ ipcMain.handle('reading:snapshot:import',async(event,payload:unknown)=>{
   });
 });
 
-// ===== 1.9：桌面对等同步（阶段 1，Windows/Linux 通用）=====
+// ===== 桌面对等同步（阶段 1，Windows/Linux 通用）=====
 if(!app.requestSingleInstanceLock())app.quit();
 else{
   app.on('second-instance',()=>{if(window){if(window.isMinimized())window.restore();window.focus();}});
@@ -419,7 +459,7 @@ else{
     backupService.registerIpc(ipcMain);
     await backupService.loadSettings();
     backupService.start();
-    // 1.13：垃圾桶阶段式清理——启动时跑一次，之后每 6 小时一次（永久删除超期条目）。
+    // 垃圾桶阶段式清理——启动时跑一次，之后每 6 小时一次（永久删除超期条目）。
     const runTrashCleanup=()=>{void call('trashCleanup').catch(()=>{});};
     runTrashCleanup();setInterval(runTrashCleanup,6*3600*1000);
     protocol.handle('reading-asset',assetHandler(libraryDir,call));
@@ -449,7 +489,7 @@ else{
     shuttingDown=true;
     await backupService?.stop();
     await snapshotQueue;
-    // 1.6 ⑧：退出前回收所有 PTY，避免残留 shell 进程。
+    // 退出前回收所有 PTY，避免残留 shell 进程。
     closeTerminals();
     await closeDatabase().catch(()=>{});
     app.quit();

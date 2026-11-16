@@ -9,6 +9,7 @@ export interface ImageBox {
 export interface AssetEmbed {
   assetId:string;
   display:string;
+  name?:string;
   boxes:ImageBox[];
   mask:ImageBox|null;
 }
@@ -68,6 +69,11 @@ export function parseAssetEmbed(token:string):AssetEmbed|null {
       embed.display=parts.slice(0,-1).join('|');
     }
   }
+  const displayParts=embed.display.split('|');
+  const name=displayParts.at(-1);
+  if(name?.startsWith('ir-name=')){
+    try{embed.name=decodeURIComponent(name.slice(8));embed.display=displayParts.slice(0,-1).join('|');}catch{/* Legacy display text */}
+  }
   return embed;
 }
 
@@ -76,7 +82,7 @@ function encodeBox({id,x,y,width,height}:ImageBox):string {
 }
 
 export function formatAssetEmbed(embed:AssetEmbed):string {
-  const options=embed.display?'|'+embed.display:'';
+  const options=(embed.display?'|'+embed.display:'')+(embed.name?'|ir-name='+encodeURIComponent(embed.name):'');
   const mask=embed.mask?'|ir-mask='+encodeBox(embed.mask):'';
   const boxes=embed.boxes.length?'|ir-boxes='+embed.boxes.map(encodeBox).join(';'):'';
   return '![[asset:'+embed.assetId+options+mask+boxes+']]';

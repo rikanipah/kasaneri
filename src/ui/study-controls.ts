@@ -92,7 +92,7 @@ export function renderStudyBar(state:StudyControlsState,actions:StudyControlsAct
   priority.hidden=item?.kind!=='reading';
   if(item?.kind==='reading')priority.textContent=t('优先级 {0}',item.priority);
   const edit=element<HTMLButtonElement>('study-edit');
-  // 1.199：待办（材料）也显示左下角「编辑」，快捷键同样是 Alt+E。
+  // 待办（材料）也显示左下角「编辑」，快捷键同样是 Alt+E。
   edit.hidden=!item||item.id!==current?.id;
   edit.textContent=item?.kind==='reading'?t('编辑'):(editing?t('完成编辑'):t('编辑'));edit.disabled=busy;
   const pause=document.getElementById('study-pause') as HTMLButtonElement|null;

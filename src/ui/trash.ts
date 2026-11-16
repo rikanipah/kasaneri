@@ -1,5 +1,5 @@
 import { t, getLocale } from '../core/i18n';
-// ===== 1.13：垃圾桶 =====
+// ===== 垃圾桶 =====
 // 删除 = 软删除 + trash 条目；这里做「列表 / 恢复 / 彻底删除 / 立即清理」。
 // 清理策略见 database.ts trashCleanup()：超过保留天数即永久删除。
 const el=(tag:string,text='',className='')=>{const node=document.createElement(tag);node.textContent=text;node.className=className;return node;};
@@ -22,7 +22,7 @@ export class TrashDialog{
     const header=el('div','','statistics-heading');
     header.append(el('h3',t('垃圾桶')));
     this.body.append(header,this.list,this.note);
-    // 1.36：底部按钮栏（与统计窗口一致，关闭在右下角）
+    // 底部按钮栏（与统计窗口一致，关闭在右下角）
     const footer=el('div','','dialog-actions');
     const closeButton=el('button',t('关闭')) as HTMLButtonElement;
     closeButton.onclick=()=>{this.sequence++;this.dialog.close();};
@@ -50,7 +50,7 @@ export class TrashDialog{
       catch(reason){this.note.textContent=reason instanceof Error?reason.message:String(reason);}
       finally{cleanup.disabled=false;await this.render(sequence);}
     })();
-    // 1.183：一键清空（把垃圾桶里所有条目立即永久删除）
+    // 一键清空（把垃圾桶里所有条目立即永久删除）
     const emptyAll=el('button',t('清空垃圾桶')) as HTMLButtonElement;
     emptyAll.onclick=()=>void (async()=>{
       if(!items.length)return;
@@ -72,7 +72,7 @@ export class TrashDialog{
       const kindLabel=item.kind==='folder'?t('文件夹'):item.kind==='cloze'?t('检测卡'):item.kind==='topic'?t('主题'):t('提取');
       head.append(el('span',kindLabel,'trash-kind trash-kind-'+item.kind));
       head.append(el('span',item.title||t('（无标题）'),'trash-item-title'));
-      // 1.121：文件夹（或带下级的主题/提取）是连内容一起删的，这里标出「含 N 项」，恢复时整棵一起回来。
+      // 文件夹（或带下级的主题/提取）是连内容一起删的，这里标出「含 N 项」，恢复时整棵一起回来。
       const contained=Number(item.childCount)>0?t(' · 含 {0} 项',item.childCount):'';
       head.append(el('span',t('{0} · 原位置：{1} · {2}',contained,item.parentTitle||t('未归类'),new Date(Number(item.deletedAt)).toLocaleString(getLocale())),'trash-item-meta'));
       row.append(head);
@@ -86,7 +86,7 @@ export class TrashDialog{
         catch(reason){this.note.textContent=reason instanceof Error?reason.message:String(reason);}
         finally{await this.render(sequence);}
       })();
-      // 1.183：垃圾桶里也能先打开看看内容，再决定恢复/删除
+      // 垃圾桶里也能先打开看看内容，再决定恢复/删除
       const view=el('button',t('查看')) as HTMLButtonElement;
       const full=el('pre','','trash-item-full');full.hidden=true;
       view.onclick=()=>{

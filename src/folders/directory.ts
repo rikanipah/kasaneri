@@ -1,5 +1,5 @@
 import { t } from '../core/i18n';
-import type {ChildrenPage,TreeNode} from '../core/model';
+import type {ChildrenPage,DirectoryBranch,TreeNode} from '../core/model';
 import {Repository,metadataColumns} from '../data/database';
 export type DirectoryType='topic'|'material'|'cloze';
 export class DirectoryProjection {
@@ -36,6 +36,24 @@ export class DirectoryProjection {
       FROM directory_projection v JOIN nodes n ON n.id=v.id WHERE v.parent_id IS ? ${predicate} ORDER BY v.position,v.id LIMIT ?`).all(...args);
     const items=rows.slice(0,limit).map(row=>{const {projectedChildren,...node}=row;return {...node,hasChildren:!!projectedChildren};}) as unknown as TreeNode[];
     const last=items.at(-1);return {items,cursor:rows.length>limit&&last?{position:last.position,id:last.id}:null};
+  }
+  branches(types?:DirectoryType[]):DirectoryBranch[] {
+    const projected=this.prepare(types);
+    const source=projected?'directory_projection v JOIN nodes n ON n.id=v.id':'nodes n';
+    const parent=projected?'v.parent_id':'n.parent_id';
+    const rows=this.repository.query(`SELECT ${metadataColumns},${parent} AS visibleParentId
+      FROM ${source} WHERE n.deleted_at IS NULL ORDER BY ${parent},n.position,n.id`).all();
+    const groups=new Map<string|null,TreeNode[]>();
+    for(const {visibleParentId,...row} of rows){
+      const parentId=typeof visibleParentId==='string'?visibleParentId:null;
+      let items=groups.get(parentId);
+      if(!items)groups.set(parentId,items=[]);
+      items.push(row as unknown as TreeNode);
+    }
+    for(const items of groups.values()){
+      for(const node of items)node.hasChildren=groups.has(node.id);
+    }
+    return [...groups].map(([parentId,items])=>({parentId,items}));
   }
   path(id:string,types?:DirectoryType[]):TreeNode[] {
     if(!this.prepare(types))return this.repository.path(id);

@@ -80,11 +80,11 @@ export function migrateLibrary(repository:Repository):void{
   if(version<5)repository.transaction(()=>migrateAnki(repository));
   if(version<6)repository.transaction(()=>migrateWorkflow(repository));
   if(version<7)repository.transaction(()=>{
-    // 1.7 ③：阅读点。字符偏移，0 表示没有记录；切换/评分时由渲染层写回。
+    // 阅读点。字符偏移，0 表示没有记录；切换/评分时由渲染层写回。
     repository.db.exec('ALTER TABLE reading_state ADD COLUMN reading_position INTEGER NOT NULL DEFAULT 0;PRAGMA user_version=7;');
   });
   if(version<8)repository.transaction(()=>{
-    // 1.13：垃圾桶。删除=软删除（nodes.deleted_at）+ 这里记一条回收站条目，
+    // 垃圾桶。删除=软删除（nodes.deleted_at）+ 这里记一条回收站条目，
     // 供「撤销删除 / 垃圾桶列表 / 阶段式清理」使用。parent_id 与 kind 是删除时的快照，
     // 恢复时用来把卡片放回原处并还原复习/待办状态。
     repository.db.exec(`
@@ -105,7 +105,7 @@ export function migrateLibrary(repository:Repository):void{
   // 注意：迁移必须按版本升序执行（每个迁移都会把 user_version 写成自己的版本号），
   // 之前的顺序放反会导致升到 9 之后又被 8 覆盖回 8。
   if(version<9)repository.transaction(()=>{
-    // 1.29：记录上次自动延后时间。auto-postpone 每天最多作用一次，避免反复进入待办把同一批材料越推越远。
+    // 记录上次自动延后时间。auto-postpone 每天最多作用一次，避免反复进入待办把同一批材料越推越远。
     repository.db.exec('ALTER TABLE reading_state ADD COLUMN postponed_at INTEGER NOT NULL DEFAULT 0;PRAGMA user_version=9;');
   });
   if(version<10)repository.transaction(()=>repository.db.exec(`
@@ -133,4 +133,17 @@ export function migrateLibrary(repository:Repository):void{
   `));
   if(version<12)repository.transaction(()=>migrateContentSync(repository));
   if(version<13)repository.transaction(()=>migrateMemoryPrerequisites(repository));
+  if(version<14)repository.transaction(()=>{
+    const columns=new Set(repository.query('PRAGMA table_info(nodes)').all().map(row=>String(row.name)));
+    if(!columns.has('content_objects'))repository.db.exec("ALTER TABLE nodes ADD COLUMN content_objects TEXT NOT NULL DEFAULT '[]'");
+    if(!columns.has('answer_objects'))repository.db.exec("ALTER TABLE nodes ADD COLUMN answer_objects TEXT NOT NULL DEFAULT '[]'");
+    repository.db.exec(`
+      CREATE TRIGGER IF NOT EXISTS sync_content_attachment_update AFTER UPDATE OF content_objects,answer_objects ON nodes
+      WHEN old.content_objects IS NOT new.content_objects OR old.answer_objects IS NOT new.answer_objects
+      BEGIN
+        INSERT INTO sync_content_dirty SELECT new.id WHERE NOT EXISTS(SELECT 1 FROM sync_content_dirty WHERE node_id=new.id);
+      END;
+      PRAGMA user_version=14;
+    `);
+  });
 }

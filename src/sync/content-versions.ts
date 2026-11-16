@@ -82,7 +82,7 @@ export function inspectContentVersions(nodeId:string,versions:readonly ContentVe
   return {missing,heads};
 }
 
-// 1.191：Anki 式自动合并。本机没有未推送改动、远端却送来分叉版本时，取较新的那一版（createdAt 大者，
+// Anki 式自动合并。本机没有未推送改动、远端却送来分叉版本时，取较新的那一版（createdAt 大者，
 // 相同则版本号大者），把分叉头一起记为父版本。两边都用同一规则，得到同一个合并版本，下一轮自然收敛。
 export function mergeContentVersions(nodeId:string,heads:readonly ContentVersion[]):ContentVersion{
   if(heads.length<2)throw Error(t('合并至少需要两个卡片版本。'));

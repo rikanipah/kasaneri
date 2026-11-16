@@ -5,18 +5,22 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSy
 import { basename, join } from 'node:path';
 import { makeAnchor, titleFrom } from '../core/card';
 import { studyReady } from '../core/image-occlusion';
+import { projectStoredDocuments,readDocuments,storeDocuments,type StoredDocuments } from './document-storage';
 import {migrateLibrary} from './migrations';
 import {TrashStore} from './trash-store';
 import type { Anchor, Asset, ChildrenPage, CreateInput, Material, NodeInput, SaveInput, TreeNode } from '../core/model';
 
-// 1.6：metadata 列加入公共列清单。TreeNode 类型没有 metadata 字段，多出来的值会被忽略；
+// metadata 列加入公共列清单。TreeNode 类型没有 metadata 字段，多出来的值会被忽略；
 // Material（getNode）会解析它，见下方 material()。
 export const metadataColumns = `n.id, n.parent_id AS parentId, n.folder_id AS folderId,n.priority,n.source_id AS sourceId, n.kind, n.title, n.position, n.metadata,
  EXISTS(SELECT 1 FROM nodes c WHERE c.parent_id=n.id AND c.deleted_at IS NULL) AS hasChildren`;
 
 function material(row: any): Material | null {
-  return row ? { ...row, hasChildren: Boolean(row.hasChildren), anchor: row.anchor ? JSON.parse(row.anchor) : null,
-    metadata: row.metadata ? JSON.parse(row.metadata) : {} } : null;
+  if(!row)return null;
+  const {content_objects,answer_objects,...value}=row;
+  const documents=readDocuments(row);
+  return {...value,...projectStoredDocuments(row),documents,hasChildren:Boolean(row.hasChildren),
+    anchor:row.anchor?JSON.parse(row.anchor):null,metadata:row.metadata?JSON.parse(row.metadata):{}};
 }
 
 function fingerprint(content: string, answer: string): string {
@@ -29,7 +33,7 @@ export class Repository {
   readonly db: DatabaseSync;
   private statements = new Map<string, StatementSync>();
 
-  /** 1.23：垃圾桶文件夹（与数据库所在文件夹同级，默认 <dataDir>/../trash），删除的卡片正文快照落在这里。 */
+  /** 垃圾桶文件夹（与数据库所在文件夹同级，默认 <dataDir>/../trash），删除的卡片正文快照落在这里。 */
   readonly trashDir: string;
   private readonly trash:TrashStore;
   constructor(readonly dataDir: string, trashDir?: string) {
@@ -70,16 +74,17 @@ export class Repository {
 
   private insert(node: NodeInput): void {
     const now = new Date().toISOString();
-    this.query(`INSERT INTO nodes(id,parent_id,source_id,kind,title,content,answer,anchor,position,metadata,created_at,updated_at,folder_id,priority,study_ready,push_ready)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(node.id,node.parentId,node.sourceId,node.kind,node.title,
-      node.content,node.answer,node.anchor ? JSON.stringify(node.anchor) : null,node.position,
+    const body=storeDocuments(node.content,node.answer);
+    this.query(`INSERT INTO nodes(id,parent_id,source_id,kind,title,content,answer,content_objects,answer_objects,anchor,position,metadata,created_at,updated_at,folder_id,priority,study_ready,push_ready)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(node.id,node.parentId,node.sourceId,node.kind,node.title,
+      body.content,body.answer,body.content_objects,body.answer_objects,node.anchor ? JSON.stringify(node.anchor) : null,node.position,
       JSON.stringify(node.metadata || {}),now,now,node.folderId||null,node.priority??null,
       studyReady(node.kind,node.content,node.answer),node.content.trim()||node.answer.trim()?1:0);
   }
 
   ensureDefaultFolder(exclude?:string):string {
     const id=exclude==='folder:unfiled'?'folder:recovered':'folder:unfiled';
-    // 1.119：默认文件夹固定叫「默认」，并用极小 position 保证排在所有文件夹最上面；
+    // 默认文件夹固定叫「默认」，并用极小 position 保证排在所有文件夹最上面；
     // 冲突时连 title/position 一起更新，旧库里的「未归类」会被改名并置顶。
     const stored=this.getSetting('studySettings') as {defaultFolderName?:string}|null;
     const title=id==='folder:unfiled'?(String(stored?.defaultFolderName||t('默认')).trim()||t('默认')):t('保留的卡片');
@@ -92,7 +97,7 @@ export class Repository {
     return id;
   }
 
-  /** 1.204：设置里改了默认文件夹名称时，立即重命名现有的默认文件夹。 */
+  /** 设置里改了默认文件夹名称时，立即重命名现有的默认文件夹。 */
   renameDefaultFolder(name:string):void{
     const title=String(name||'').trim()||t('默认');
     this.query("UPDATE nodes SET title=?,updated_at=? WHERE id='folder:unfiled'").run(title,new Date().toISOString());
@@ -160,8 +165,29 @@ export class Repository {
   }
 
   getNode(id: string, includeDeleted=false): Material | null {
-    return material(this.query(`SELECT ${metadataColumns},n.content,n.answer,n.anchor,n.revision
+    return material(this.query(`SELECT ${metadataColumns},n.content,n.answer,n.content_objects,n.answer_objects,n.anchor,n.revision
       FROM nodes n WHERE n.id=?${includeDeleted?'':' AND n.deleted_at IS NULL'}`).get(id));
+  }
+
+  getNodeForEditor(id:string):Material|null{
+    const row=this.query('SELECT content,answer,content_objects,answer_objects FROM nodes WHERE id=? AND deleted_at IS NULL').get(id) as StoredDocuments|undefined;
+    if(row&&(row.content.includes('![[asset:')||row.answer.includes('![[asset:'))){
+      const legacy=storeDocuments(row.content,row.answer);
+      const stored={
+        content:row.content_objects==='[]'?legacy.content:row.content,
+        answer:row.answer_objects==='[]'?legacy.answer:row.answer,
+        content_objects:row.content_objects==='[]'?legacy.content_objects:row.content_objects,
+        answer_objects:row.answer_objects==='[]'?legacy.answer_objects:row.answer_objects,
+      };
+      // Convert when an old card is opened. Its projected text, revision and
+      // reading/selection coordinates stay stable for existing anchors and peers.
+      if(stored.content!==row.content||stored.answer!==row.answer||
+        stored.content_objects!==row.content_objects||stored.answer_objects!==row.answer_objects){
+        this.query('UPDATE nodes SET content=?,answer=?,content_objects=?,answer_objects=? WHERE id=?')
+          .run(stored.content,stored.answer,stored.content_objects,stored.answer_objects,id);
+      }
+    }
+    return this.getNode(id);
   }
 
   path(id: string): TreeNode[] {
@@ -180,17 +206,18 @@ export class Repository {
   anchors(id: string): {id:string;anchor:Anchor}[] {
     return this.query("SELECT id,anchor,kind FROM nodes WHERE source_id=? AND anchor IS NOT NULL AND deleted_at IS NULL")
       .all(id).map(row=>{const anchor=JSON.parse(String(row.anchor));
-    // 1.60：把来源节点 id 一起给渲染层，供 Ctrl+点击高亮跳转
+    // 把来源节点 id 一起给渲染层，供 Ctrl+点击高亮跳转
     return {id:String(row.id),anchor:{...anchor,nodeId:String(row.id),highlight:anchor.highlight||(row.kind==='cloze'?'cloze':'extract')}};});
   }
 
   save(input: SaveInput): {revision:number} {
-    const {content,answer}=input;
-    if(typeof content!=='string' || typeof answer!=='string') throw Error(t('无效正文。'));
-    const result = this.query(`UPDATE nodes SET content=?,answer=?,revision=revision+1,updated_at=?,
+    if(typeof input.content!=='string'||typeof input.answer!=='string')throw Error(t('无效正文。'));
+    const body=storeDocuments(input.content,input.answer,input.documents);
+    const {content,answer}=projectStoredDocuments(body);
+    const result = this.query(`UPDATE nodes SET content=?,answer=?,content_objects=?,answer_objects=?,revision=revision+1,updated_at=?,
       study_ready=CASE WHEN kind='cloze' THEN ? ELSE ? END,push_ready=${pushReadySql}
       WHERE id=? AND revision=? AND kind!='folder' AND deleted_at IS NULL`)
-      .run(content,answer,new Date().toISOString(),studyReady('cloze',content,answer),studyReady('topic',content,answer),
+      .run(body.content,body.answer,body.content_objects,body.answer_objects,new Date().toISOString(),studyReady('cloze',content,answer),studyReady('topic',content,answer),
         content,answer,input.id,input.revision);
     if(!result.changes) throw Error(t('这篇卡片已在其他位置修改。当前编辑仍在窗口里，请复制内容后重新打开。'));
     return {revision:input.revision+1};
@@ -203,11 +230,11 @@ export class Repository {
       if(node.kind!=='folder')this.setSetting('studySeededV3',false);
       return;
     }
-    const {content,answer}=node;
-    const changed=this.query(`UPDATE nodes SET kind=?,parent_id=?,source_id=?,title=?,content=?,answer=?,anchor=?,
+    const {content,answer}=node,body=storeDocuments(content,answer);
+    const changed=this.query(`UPDATE nodes SET kind=?,parent_id=?,source_id=?,title=?,content=?,answer=?,content_objects=?,answer_objects=?,anchor=?,
       position=?,priority=?,revision=revision+1,updated_at=?,deleted_at=NULL,study_ready=?,push_ready=${pushReadySql}
       WHERE id=? AND kind=? AND revision=? AND deleted_at IS ${restore?'NOT ':''}NULL`).run(
-      node.kind,node.parentId,node.sourceId,node.title,content,answer,node.anchor?JSON.stringify(node.anchor):null,
+      node.kind,node.parentId,node.sourceId,node.title,body.content,body.answer,body.content_objects,body.answer_objects,node.anchor?JSON.stringify(node.anchor):null,
       node.position,node.priority??null,new Date().toISOString(),studyReady(node.kind,content,answer),content,answer,
       node.id,current.kind,current.revision);
     if(!changed.changes)throw Error(t('卡片已变更，请重新检查同步版本。'));
@@ -225,7 +252,7 @@ export class Repository {
     this.query('UPDATE reading_state SET enabled=1,revision=revision+1 WHERE node_id=?').run(id);
   }
 
-  // 1.6 ⑦：按卡片读写 metadata（浅合并）。
+  // 按卡片读写 metadata（浅合并）。
   // 目前唯一的用途是启动配置 metadata.launch={command,args?,cwd?}（见 renderer/app.ts 右键菜单）。
   // 校验放在 worker 调用方；这里只做 JSON 合并与更新，保证不误伤其他字段。
   setNodeMetadata(id:string, patch:Record<string,unknown>):Material|null {
@@ -258,10 +285,10 @@ export class Repository {
         if(input.kind==='cloze'){content=source.slice(0,from)+'[...]'+source.slice(to);answer=selected;}
         else content=selected;
       }
-      // 1.133：独立「添加卡片」窗口直接给正文/答案（不经过摘录选区）
+      // 独立「添加卡片」窗口直接给正文/答案（不经过摘录选区）
       if(input.content!==undefined)content=input.content;
       if(input.answer!==undefined)answer=input.answer;
-      // 1.168：没有显式标题时——检测卡按答案命名；提取/主题按正文（选区）自动命名。
+      // 没有显式标题时——检测卡按答案命名；提取/主题按正文（选区）自动命名。
       // 选区里只有图片/音频这类附件标记时，退回到"未命名提取/未命名检测卡"。
       const plain=content.replace(/!\[[^\]]*\]\([^)]*\)/g,' ').replace(/\[[^\]]*asset:[^\]]*\]/g,' ');
       const fromText=titleFrom(plain);
@@ -294,13 +321,15 @@ export class Repository {
       .run(title.trim(),new Date().toISOString(),id).changes)throw Error(t('项目已删除。'));
   }
 
-  move(id:string,parentId:string|null,restore?:{expectedParentId:string|null}):void {
+  move(id:string,parentId:string|null,restore?:{expectedParentId:string|null},peerId?:string):void {
     this.transaction(()=>{
       const node=this.getNode(id),target=parentId?this.getNode(parentId):null;
-      // 1.72：任何卡片都可以移动（此前只允许 folder/topic，导致提取与检测卡"移至…"直接报错）
+      // 任何卡片都可以移动（此前只允许 folder/topic，导致提取与检测卡"移至…"直接报错）
       if(!node||(!target&&parentId))throw Error(t('目标位置不存在。'));
       if(restore&&node.parentId!==restore.expectedParentId)throw Error(t('卡片位置已变化，无法撤销这次移动。'));
-      if(target&&target.kind!=='folder'&&(!restore||node.kind==='folder'))throw Error(t('只能移动到文件夹里。'));
+      const peer=peerId?this.getNode(peerId):null;
+      if(peerId&&(!peer||peer.parentId!==parentId||peer.id===id))throw Error(t('目标位置不存在。'));
+      if(target&&target.kind!=='folder'&&(node.kind==='folder'||!restore&&!peer))throw Error(t('只能移动到文件夹里。'));
       if(id===parentId||parentId&&this.path(parentId).some(ancestor=>ancestor.id===id))throw Error(t('无法移动到自身或自己的下级。'));
       this.query('UPDATE nodes SET parent_id=?,updated_at=? WHERE id=?').run(parentId,new Date().toISOString(),id);
       if(node.kind!=='folder')this.updateBranchFolder(id,target?.kind==='folder'?target.id:target?.folderId??null);
@@ -360,7 +389,7 @@ export class Repository {
     return this.query('SELECT id,filename,mime,size,relative_path AS relativePath FROM assets WHERE id=?').get(id) as unknown as Asset|null;
   }
 
-  // ===== 1.207：附件管理（未引用附件进回收站，可恢复/彻底删除） =====
+  // ===== 附件管理（未引用附件进回收站，可恢复/彻底删除） =====
   private assetTrashManifest(){return join(this.trashDir,'assets','manifest.json');}
   private readAssetTrash():Array<Asset&{trashedAt:number;trashName:string}>{
     try{const value=JSON.parse(readFileSync(this.assetTrashManifest(),'utf8'));return Array.isArray(value)?value:[];}catch{return [];}
@@ -379,10 +408,12 @@ export class Repository {
   }
   unusedAssets(limit=200){
     const rows=this.query(`SELECT a.id,a.filename,a.mime,a.size,a.relative_path AS relativePath FROM assets a
-      WHERE NOT EXISTS(SELECT 1 FROM nodes n WHERE instr(n.content,'[[asset:'||a.id)>0 OR instr(n.answer,'[[asset:'||a.id)>0)
+      WHERE NOT EXISTS(SELECT 1 FROM nodes n WHERE instr(n.content,'[[asset:'||a.id)>0 OR instr(n.answer,'[[asset:'||a.id)>0
+        OR instr(n.content_objects,'"assetId":"'||a.id||'"')>0 OR instr(n.answer_objects,'"assetId":"'||a.id||'"')>0)
       ORDER BY a.size DESC,a.filename LIMIT ?`).all(limit) as unknown as Asset[];
     const totals=this.query(`SELECT count(*) n,COALESCE(SUM(size),0) bytes FROM assets a
-      WHERE NOT EXISTS(SELECT 1 FROM nodes n WHERE instr(n.content,'[[asset:'||a.id)>0 OR instr(n.answer,'[[asset:'||a.id)>0)`).get()!;
+      WHERE NOT EXISTS(SELECT 1 FROM nodes n WHERE instr(n.content,'[[asset:'||a.id)>0 OR instr(n.answer,'[[asset:'||a.id)>0
+        OR instr(n.content_objects,'"assetId":"'||a.id||'"')>0 OR instr(n.answer_objects,'"assetId":"'||a.id||'"')>0)`).get()!;
     return {total:Number(totals.n),bytes:Number(totals.bytes),items:rows};
   }
   trashUnusedAssets(){

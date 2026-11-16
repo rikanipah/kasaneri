@@ -2,6 +2,7 @@ import { t } from '../core/i18n';
 import {existsSync,readdirSync,rmSync,statSync,writeFileSync} from 'node:fs';
 import {dirname,join} from 'node:path';
 import type {Material} from '../core/model';
+import {projectStoredDocuments,type StoredDocuments} from './document-storage';
 import type {Repository} from './database';
 
 type TrashRepository=Pick<Repository,'trashDir'|'query'|'transaction'|'getNode'|'ensureDefaultFolder'>;
@@ -9,7 +10,7 @@ type TrashRepository=Pick<Repository,'trashDir'|'query'|'transaction'|'getNode'|
 export class TrashStore {
   constructor(private readonly repository:TrashRepository){}
 
-  /** 1.121：软删除单个节点：目录里立刻不可见，复习/待办一并挂起（复习记录保留）。 */
+  /** 软删除单个节点：目录里立刻不可见，复习/待办一并挂起（复习记录保留）。 */
   private softDelete(id:string):void{
     this.repository.query('UPDATE nodes SET deleted_at=? WHERE id=?').run(new Date().toISOString(),id);
     this.repository.query('UPDATE review_cards SET enabled=0 WHERE node_id=?').run(id);
@@ -41,11 +42,11 @@ export class TrashStore {
       if(!node)throw Error(t('项目已删除。'));
       const children=Number(this.repository.query('SELECT count(*) AS n FROM nodes WHERE parent_id=? AND deleted_at IS NULL').get(id)!.n);
       const stamp=Date.now();
-      // 1.121：删除＝软删除 + trash 记录 + 磁盘快照。
+      // 删除＝软删除 + trash 记录 + 磁盘快照。
       // 一次操作共用同一个 stamp，trash.parent_id 记「这次删除的根节点」作为批次标记，
       // 恢复时按这个标记把整棵子树一起取回（节点之间的 parent_id 删除时不动，树形原样保留）。
 
-      // 1.121：删文件夹（或删掉带下级的主题/卡片）＝它和里面所有内容一起进垃圾桶，
+      // 删文件夹（或删掉带下级的主题/卡片）＝它和里面所有内容一起进垃圾桶，
       // 不再是「子项上移到上级」；恢复时整棵子树一起回来。
       const descendants=this.repository.query(`WITH RECURSIVE tree(id) AS (
           SELECT id FROM nodes WHERE parent_id=? AND deleted_at IS NULL
@@ -59,7 +60,7 @@ export class TrashStore {
     });
   }
 
-  // ===== 1.23：垃圾桶文件夹（磁盘快照，与数据库文件夹同级）=====
+  // ===== 垃圾桶文件夹（磁盘快照，与数据库文件夹同级）=====
   // data/library 放 SQLite；data/trash 放被删卡片的 Markdown 快照，
   // 文件名 <删除时间>-<卡片编号>.md，可直接用文本编辑器打开人工抢救。
   private writeTrashFile(row:Record<string,unknown>,deletedAt:number):void{
@@ -69,7 +70,7 @@ export class TrashStore {
         t('- 卡片编号：{0}',String(row.id)),t('- 类型：{0}',String(row.kind)),
         t('- 删除时间：{0}',new Date(deletedAt).toISOString()),
         t('- 原父级：{0}',(row.parent_id?String(row.parent_id):'（无）')),'',
-        t('## 正文'),'',String(row.content||''),'',t('## 答案'),'',String(row.answer||''),''].join('\n');
+        t('## 正文'),'',projectStoredDocuments(row as unknown as StoredDocuments).content,'',t('## 答案'),'',projectStoredDocuments(row as unknown as StoredDocuments).answer,''].join('\n');
       writeFileSync(join(this.repository.trashDir,stamp+'-'+encodeURIComponent(String(row.id))+'.md'),body,'utf8');
     }catch{/* 写磁盘失败不影响删除主流程 */}
   }
@@ -95,7 +96,7 @@ export class TrashStore {
     return removed;
   }
 
-  // ===== 1.13：垃圾桶 =====
+  // ===== 垃圾桶 =====
   // 删除 = 软删除 + trash 里记一条 + 磁盘快照写进 data/trash；
   // 垃圾桶支持「恢复」「彻底删除」，超过保留天数自动永久删除（连同快照）。
   get(id:string){
@@ -110,7 +111,7 @@ export class TrashStore {
       WHERE t.restored_at IS NULL AND t.purged_at IS NULL AND n.deleted_at IS NOT NULL
       ORDER BY t.deleted_at DESC LIMIT ?`).all(t('未归类'),limit) as Array<Record<string,any>>;
   }
-  /** 1.121：按 trash 里的批次标记找回「同一次删除」的整棵子树；父级关系保持删除前的样子。 */
+  /** 按 trash 里的批次标记找回「同一次删除」的整棵子树；父级关系保持删除前的样子。 */
   private restoreBatch(rootId:string,now:string,at:number):string[]{
     const pending=this.repository.query(`SELECT node_id AS id FROM trash
       WHERE parent_id=? AND restored_at IS NULL AND purged_at IS NULL AND node_id<>?`).all(rootId,rootId) as Array<{id:string}>;
@@ -131,7 +132,7 @@ export class TrashStore {
       const row=this.repository.query('SELECT * FROM nodes WHERE id=?').get(id);
       const entry=this.get(id);
       const now=new Date().toISOString(),at=Date.now();
-      // 1.118/1.121：默认文件夹（folder:unfiled）本身删不掉，恢复它时不应再建一个同名文件夹，
+      // 旧版/默认文件夹（folder:unfiled）本身删不掉，恢复它时不应再建一个同名文件夹，
       // 而是把当时被一起删掉的整棵子树放回现有的默认文件夹里。
       if(id==='folder:unfiled'){
         const defaultId=this.repository.ensureDefaultFolder('');
@@ -141,7 +142,7 @@ export class TrashStore {
         return {parentId:defaultId,title:String(folder?.title||t('默认')),snapshots};
       }
       if(!row||!row.deleted_at||!entry)throw Error(t('垃圾桶里没有这张卡片。'));
-      // 1.121：恢复文件夹/带下级的卡片时，整棵子树一起回来。
+      // 恢复文件夹/带下级的卡片时，整棵子树一起回来。
       const snapshots=this.restoreBatch(id,now,at);
       // 原父级也被删/不存在时，放回「默认」，避免恢复到看不见的地方；
       // 顶级文件夹原本就在根上，恢复时放回根，而不是塞进「默认」。
@@ -161,7 +162,7 @@ export class TrashStore {
     const purged=this.repository.transaction(()=>{
       const row=this.repository.query('SELECT deleted_at FROM nodes WHERE id=?').get(id);
       if(!row?.deleted_at||!this.get(id))throw Error(t('垃圾桶里没有这张卡片。'));
-      // 1.121：彻底删除文件夹时，一起删掉的整棵子树也一并清掉，否则子项会留下悬空的 parent_id。
+      // 彻底删除文件夹时，一起删掉的整棵子树也一并清掉，否则子项会留下悬空的 parent_id。
       // 深度倒序（叶子先删）以满足节点之间的外键约束。
       const targets=(this.repository.query(`WITH RECURSIVE tree(id,depth) AS (SELECT id,0 FROM nodes WHERE id=?
            UNION ALL SELECT n.id,depth+1 FROM nodes n JOIN tree t ON n.parent_id=t.id WHERE n.deleted_at IS NOT NULL)
@@ -175,10 +176,10 @@ export class TrashStore {
       this.repository.query(`DELETE FROM deck_settings WHERE folder_id IN (${targetIds})`).run(ids);
       // An extract moved to a different branch keeps its content when its old source is removed.
       this.repository.query(`UPDATE nodes SET source_id=NULL WHERE source_id IN (${targetIds})`).run(ids);
-      // 1.184：记录这些卡片引用的附件，节点删完后回收没人再用的附件（文件+记录）
+      // 记录这些卡片引用的附件，节点删完后回收没人再用的附件（文件+记录）
       const hashes=new Set<string>();
       for(const target of targets){
-        const row=this.repository.query('SELECT content,answer FROM nodes WHERE id=?').get(target) as {content?:string;answer?:string}|undefined;
+        const row=this.repository.getNode(target,true);
         for(const text of [row?.content||'',row?.answer||'']){
           for(const match of text.matchAll(/asset:([a-f0-9]{64})/g))hashes.add(match[1]!);
         }
@@ -190,19 +191,19 @@ export class TrashStore {
     });
     this.removeTrashFiles(purged);
   }
-  /** 1.184：删除卡片后，如果没有任何卡片（含垃圾桶里的）再引用该附件，就把附件文件和记录一起删掉。 */
+  /** 删除卡片后，如果没有任何卡片（含垃圾桶里的）再引用该附件，就把附件文件和记录一起删掉。 */
   private purgeOrphanAssets(hashes:Set<string>):void{
     if(!hashes.size)return;
     const assets=join(dirname(this.repository.trashDir),'assets');
     for(const hash of hashes){
-      const used=this.repository.query('SELECT 1 FROM nodes WHERE content LIKE ? OR answer LIKE ? LIMIT 1').get('%'+hash+'%','%'+hash+'%');
+      const used=this.repository.query('SELECT 1 FROM nodes WHERE content LIKE ? OR answer LIKE ? OR content_objects LIKE ? OR answer_objects LIKE ? LIMIT 1').get(...Array(4).fill('%'+hash+'%'));
       if(used)continue;
       const row=this.repository.query('SELECT relative_path AS path FROM assets WHERE id=?').get(hash) as {path?:string}|undefined;
       if(row?.path){try{const file=join(assets,row.path);if(existsSync(file))rmSync(file,{force:true});}catch{}}
       try{this.repository.query('DELETE FROM assets WHERE id=?').run(hash);}catch{}
     }
   }  /** 阶段式清理：返回 {purged, thinned}
-   *  1.18：按用户要求取消阶梯式清理——只按保留天数判断：超过天数就永久删除。 */
+   *  取消阶梯式清理——只按保留天数判断：超过天数就永久删除。 */
   cleanup(now=Date.now(),retentionDays=30):{purged:number}{
     const day=86400000,cutoff=now-Math.max(1,retentionDays)*day;
     const expired=this.repository.query(`SELECT t.node_id AS nodeId FROM trash t JOIN nodes n ON n.id=t.node_id

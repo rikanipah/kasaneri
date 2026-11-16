@@ -14,12 +14,43 @@
 <div id="window-buttons"><button data-i18n-attrs="aria-label" id="minimize" aria-label="最小化"></button><button data-i18n-attrs="aria-label" id="maximize" aria-label="最大化或还原"></button><button data-i18n-attrs="aria-label" id="close" aria-label="关闭"></button></div></header>
 <aside id="sidebar">
 <div id="directory-pane">
-<section id="directory-tree-pane" aria-labelledby="directory-heading">
-  <div class="directory-header"><span data-i18n id="directory-heading">目录树</span><div data-i18n-attrs="aria-label" id="directory-filters" role="group" aria-label="按卡片类型筛选目录"><button data-i18n-attrs="aria-label title" data-type="topic" aria-label="只显示主题" aria-pressed="false" title="主题"></button><button data-i18n-attrs="aria-label title" data-type="material" aria-label="只显示提取及其父级" aria-pressed="false" title="提取及其父级"></button><button data-i18n-attrs="aria-label title" data-type="cloze" aria-label="只显示检测卡及其父级" aria-pressed="false" title="检测卡及其父级"></button></div></div>
+<details id="directory-tree-pane" open>
+  <summary class="tree-heading"><span data-i18n>目录树</span><span class="tree-actions">
+      <button type="button" class="tree-sort-button" data-i18n-attrs="aria-label title" aria-label="排序" title="排序" popovertarget="directory-sort"></button>
+      <button type="button" id="directory-toggle-all" aria-controls="tree"></button>
+      <button type="button" class="tree-filter-button" data-i18n-attrs="aria-label title" aria-label="按卡片类型筛选" title="按卡片类型筛选" popovertarget="directory-filters"></button>
+    </span>
+    <div class="tree-popup tree-sort" id="directory-sort" popover="auto" role="group" data-i18n-attrs="aria-label" aria-label="排序">
+      <button type="button" data-sort="position" data-i18n>原顺序</button>
+      <button type="button" data-sort="name-asc" data-i18n>名称升序</button>
+      <button type="button" data-sort="name-desc" data-i18n>名称降序</button>
+      <button type="button" data-sort="type" data-i18n>卡片类型</button>
+    </div>
+    <div class="tree-popup tree-filters" id="directory-filters" popover="auto" role="group" data-i18n-attrs="aria-label" aria-label="按卡片类型筛选">
+      <button type="button" data-i18n-attrs="aria-label title" data-type="topic" aria-label="只显示主题" aria-pressed="false" title="主题"></button>
+      <button type="button" data-i18n-attrs="aria-label title" data-type="material" aria-label="只显示提取及其父级" aria-pressed="false" title="提取及其父级"></button>
+      <button type="button" data-i18n-attrs="aria-label title" data-type="cloze" aria-label="只显示检测卡及其父级" aria-pressed="false" title="检测卡及其父级"></button>
+    </div></summary>
   <div id="tree-viewport"><div id="tree" tabindex="-1"></div></div>
-</section>
+</details>
+<div id="tree-divider" role="separator" aria-orientation="horizontal" aria-controls="directory-tree-pane card-relations" aria-valuemin="15" aria-valuemax="85" data-i18n-attrs="aria-label" aria-label="调整两棵树的高度" tabindex="0"></div>
 <details id="card-relations" open hidden>
-  <summary data-i18n>记忆树</summary>
+  <summary class="tree-heading"><span data-i18n>记忆树</span><span class="tree-actions">
+      <button type="button" class="tree-sort-button" data-i18n-attrs="aria-label title" aria-label="排序" title="排序" popovertarget="memory-sort"></button>
+      <button type="button" id="memory-toggle-all" aria-controls="memory-tree"></button>
+      <button type="button" class="tree-filter-button" data-i18n-attrs="aria-label title" aria-label="按卡片类型筛选" title="按卡片类型筛选" popovertarget="memory-filters"></button>
+    </span>
+    <div class="tree-popup tree-sort" id="memory-sort" popover="auto" role="group" data-i18n-attrs="aria-label" aria-label="排序">
+      <button type="button" data-sort="position" data-i18n>原顺序</button>
+      <button type="button" data-sort="name-asc" data-i18n>名称升序</button>
+      <button type="button" data-sort="name-desc" data-i18n>名称降序</button>
+      <button type="button" data-sort="type" data-i18n>卡片类型</button>
+    </div>
+    <div class="tree-popup tree-filters" id="memory-filters" popover="auto" role="group" data-i18n-attrs="aria-label" aria-label="按卡片类型筛选">
+      <button type="button" data-i18n-attrs="aria-label title" data-type="topic" aria-label="只显示主题" aria-pressed="false" title="主题"></button>
+      <button type="button" data-i18n-attrs="aria-label title" data-type="material" aria-label="只显示提取及其父级" aria-pressed="false" title="提取及其父级"></button>
+      <button type="button" data-i18n-attrs="aria-label title" data-type="cloze" aria-label="只显示检测卡及其父级" aria-pressed="false" title="检测卡及其父级"></button>
+    </div></summary>
   <div class="relation-panel">
     <ul data-i18n-attrs="aria-label" id="memory-tree" class="relation-tree" aria-label="记忆关系"></ul>
   </div>
@@ -39,7 +70,7 @@
 <div data-i18n-attrs="aria-label" id="resize" role="separator" aria-label="调整目录宽度"></div>
 <main>
 <div id="notice" role="alert" hidden></div>
-<div id="main-body"><nav data-i18n-attrs="aria-label" id="browser-filters" aria-label="浏览筛选" hidden></nav><div id="editor-stack">
+<div id="main-body"><nav data-i18n-attrs="aria-label" id="browser-filters" aria-label="浏览筛选" hidden></nav><div id="editor-stack" tabindex="-1">
 <section data-i18n-attrs="aria-label" id="card-browser" aria-label="卡片浏览器" hidden></section>
 <div data-i18n-attrs="aria-label" id="browser-rule" role="separator" aria-label="调整浏览列表和编辑区的高度" aria-orientation="horizontal" tabindex="0" hidden></div>
 <div id="workspace"><div data-i18n class="empty">正在打开资料库…</div></div>

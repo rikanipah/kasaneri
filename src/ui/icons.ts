@@ -1,5 +1,10 @@
 /*! Lucide icons, ISC; Feather-derived icons, MIT. See src/vendor/lucide/LICENSE. */
 const icons={
+  "list-ordered": '<svg viewBox="0 0 24 24"><path d="M10 6h10m-10 6h10m-10 6h10M4 10h3M5 10V4L4 5m0 10a1.5 1.5 0 1 1 3 0c0 1.5-3 2.5-3 4h3"/></svg>',
+  "chevrons-in": '<svg viewBox="0 0 24 24"><path d="m7 3 5 5 5-5M7 21l5-5 5 5"/></svg>',
+  "chevrons-out": '<svg viewBox="0 0 24 24"><path d="m7 8 5-5 5 5M7 16l5 5 5-5"/></svg>',
+  "copy": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><rect width=\"14\" height=\"14\" x=\"8\" y=\"8\" rx=\"2\"/><path d=\"M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2\"/></svg>",
+  "check": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><path d=\"m20 6-11 11-5-5\"/></svg>",
   "panel-right-close": "<svg\n  xmlns=\"http://www.w3.org/2000/svg\"\n  width=\"24\"\n  height=\"24\"\n  viewBox=\"0 0 24 24\"\n  fill=\"none\"\n  stroke=\"currentColor\"\n  stroke-width=\"2\"\n  stroke-linecap=\"round\"\n  stroke-linejoin=\"round\"\n>\n  <rect width=\"18\" height=\"18\" x=\"3\" y=\"3\" rx=\"2\" />\n  <path d=\"M15 3v18\" />\n  <path d=\"m8 9 3 3-3 3\" />\n</svg>\n",
   "panel-right-open": "<svg\n  xmlns=\"http://www.w3.org/2000/svg\"\n  width=\"24\"\n  height=\"24\"\n  viewBox=\"0 0 24 24\"\n  fill=\"none\"\n  stroke=\"currentColor\"\n  stroke-width=\"2\"\n  stroke-linecap=\"round\"\n  stroke-linejoin=\"round\"\n>\n  <rect width=\"18\" height=\"18\" x=\"3\" y=\"3\" rx=\"2\" />\n  <path d=\"M15 3v18\" />\n  <path d=\"m10 15-3-3 3-3\" />\n</svg>\n",
   "play": "<svg\n  xmlns=\"http://www.w3.org/2000/svg\"\n  width=\"24\"\n  height=\"24\"\n  viewBox=\"0 0 24 24\"\n  fill=\"none\"\n  stroke=\"currentColor\"\n  stroke-width=\"2\"\n  stroke-linecap=\"round\"\n  stroke-linejoin=\"round\"\n>\n  <path d=\"M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z\" />\n</svg>\n",

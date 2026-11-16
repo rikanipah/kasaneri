@@ -11,7 +11,7 @@ export function normalizePeers(input:unknown):SyncPeer[]{
 }
 
 /**
- * 1.76：列出本机可用于同步的地址。
+ * 列出本机可用于同步的地址。
  * - 局域网 IPv4（192.168/10/172.16）；
  * - Tailscale 地址（100.64.0.0/10，跨网络时用它）；
  * - 回环地址不列（对方连不上）。

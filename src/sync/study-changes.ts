@@ -7,10 +7,10 @@ export const studyChangeSession='sync-schedule-v1';
 export const studyChangePrefix='schedule:';
 type Reading={enabled:number;due_at:number;interval_ms:number;reps:number;last_read_at:number|null};
 type Review={enabled:number;due_at:number;stage:number;state:string;algorithm_version:string};
-// 1.194：hold（留存判定）和 buried（已搁置）也随排程一起同步；旧版对端/旧操作里没有这两项。
+// hold（留存判定）和 buried（已搁置）也随排程一起同步；旧版对端/旧操作里没有这两项。
 export type Schedule={reading:Reading;review:Review|null;leech:boolean;hold?:boolean;buried?:boolean};
 type UndoTarget={id:string;kind:'fsrs'|'reading';at:number};
-// 1.194：tags 只同步 hold/buried 标签，不碰排程本身（复习时清除 buried、取消留存判定等场景）。
+// tags 只同步 hold/buried 标签，不碰排程本身（复习时清除 buried、取消留存判定等场景）。
 type Change={action:'queue'|'undo'|'snapshot'|'tags';target?:UndoTarget};
 
 export function readSchedule(db:Repository,id:string):Schedule|null{
@@ -73,7 +73,7 @@ export function sameSchedule(a:Schedule,b:Schedule):boolean{
     sameReviewProgress(a.review,b.review)&&sameReadingProgress(a.reading,b.reading);
 }
 
-/** 1.194：只同步标签变化（hold / buried），排程字段两边保持一致，所以不会跟评分/排程操作互相覆盖。 */
+/** 只同步标签变化（hold / buried），排程字段两边保持一致，所以不会跟评分/排程操作互相覆盖。 */
 export function recordTagChange(db:Repository,id:string,at:number,before:Schedule,after:Schedule):void{
   if(sameTag(before.hold,after.hold)&&sameTag(before.buried,after.buried))return;
   store(db,makeChange(id,at,before,after,{action:'tags'}));

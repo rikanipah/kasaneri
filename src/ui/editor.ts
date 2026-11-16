@@ -1,7 +1,7 @@
 import { t } from '../core/i18n';
-import { EditorState, StateEffect, StateField } from '@codemirror/state';
-import { Decoration, EditorView, WidgetType, keymap, type DecorationSet } from '@codemirror/view';
-import { defaultKeymap, history, historyField, historyKeymap, isolateHistory } from '@codemirror/commands';
+import { EditorState, MapMode, StateEffect, StateField, type ChangeDesc, type Range as DecorationRange } from '@codemirror/state';
+import { Decoration, EditorView, WidgetType, dropCursor, keymap, type DecorationSet } from '@codemirror/view';
+import { defaultKeymap, history, historyField, historyKeymap, invertedEffects, isolateHistory } from '@codemirror/commands';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { HighlightStyle, syntaxHighlighting, syntaxTree } from '@codemirror/language';
 import { tags } from '@lezer/highlight';
@@ -11,14 +11,28 @@ import katex from 'katex';
 // N12（1.87）：加载 mhchem 扩展，支持化学式 \ce{} 与单位 \pu{}（KaTeX 官方扩展，副作用导入即注册）
 import 'katex/contrib/mhchem';
 import { locateAnchor } from '../core/card';
-import { assetEmbeds,formatAssetEmbed,parseAssetEmbed } from '../core/image-occlusion';
+import { formatAssetEmbed,type AssetEmbed } from '../core/image-occlusion';
+import { attachmentCharacter,documentOffset,projectDocument,projectedOffset,readLegacyDocument,validAttachmentDocument,
+  type AttachmentDocument,type AttachmentObject } from '../core/attachment-document';
 import type { Anchor, Asset } from '../core/model';
 import { positionBox } from './image-occlusion';
+import { setIcon } from './icons';
 
-export interface ImageTarget {token:string;from:number;url:string;filename:string}
+export interface AttachmentTarget {
+  token:string;
+  from:number;
+  url:string;
+  filename:string;
+  assetId:string;
+  isImage:boolean;
+  masked:boolean;
+  rename:(name:string)=>void;
+  removeReference:()=>void;
+}
 
 export interface EditorOptions {
   value:string;
+  document?:AttachmentDocument;
   label:string;
   section:'question'|'answer';
   anchors:Anchor[];
@@ -26,25 +40,76 @@ export interface EditorOptions {
   textOnlyCursor?:boolean;
   readOnly?:boolean;
   snapshot?:any;
-  onChange:(value:string,typing:boolean)=>void;
-  /** 1.88（N17）：音频/视频是否自动播放（全局开关，来自设置） */
+  onChange:(value:string,typing:boolean,document:AttachmentDocument)=>void;
+  /** 音频/视频是否自动播放（全局开关，来自设置） */
   audioAutoplay?:boolean;
   onNavigate:(id:string)=>void;
-  /** 1.65：同一位置有多条锚点时，交给界面弹出选择框 */
+  /** 同一位置有多条锚点时，交给界面弹出选择框 */
   onNavigateChoice?:(ids:string[],at:{x:number,y:number})=>void;
-  onAttachmentMenu:(event:MouseEvent,choose:()=>void)=>void;
-  onImageContext?:(event:MouseEvent,image:ImageTarget)=>void;
-  onAttachments:(files:File[])=>Promise<string[]>;
+  onInsertMenu:(event:MouseEvent,attachment:()=>void,fileLink:()=>void)=>void;
+  onImageContext?:(event:MouseEvent,attachment:AttachmentTarget)=>void;
+  onAttachments:(files:File[])=>Promise<Asset[]>;
   onError:(message:string)=>void;
 }
 const renderer=new MarkdownIt({html:true,linkify:true,breaks:true});
+const fileLink=/^file:\/\//i;
+const validateWebLink=renderer.validateLink.bind(renderer);
+renderer.validateLink=url=>validateWebLink(url)||fileLink.test(url);
+renderer.renderer.rules.link_open=(tokens,index,options,_env,output)=>{
+  const href=tokens[index].attrGet('href');
+  // Preserve the target while DOMPurify strips file: hrefs from rendered Markdown.
+  if(typeof href==='string'&&fileLink.test(href))tokens[index].attrSet('data-file-link',href);
+  return output.renderToken(tokens,index,options);
+};
+
+function externalUrl(value:string):string|null{
+  if(!/^(?:https?|file):\/\//i.test(value))return null;
+  try{return new URL(value).href;}catch{return null;}
+}
+
+function decorateExternalLink(link:HTMLAnchorElement,url:string,onError:(message:string)=>void):void{
+  link.href=url;
+  if(!link.title)link.title=url;
+  link.target='_blank';
+  link.rel='noopener noreferrer';
+  const marker=document.createElement('span');
+  marker.className='external-link-mark';
+  marker.textContent='↗';
+  marker.setAttribute('aria-hidden','true');
+  link.append(marker);
+  if(fileLink.test(url))link.addEventListener('click',event=>{
+    event.preventDefault();
+    void window.reading.request('openFileLink',{url}).catch(error=>onError(error instanceof Error?error.message:String(error)));
+  });
+}
+
+interface ExternalLink {url:string;label:string}
 const assets=new Map<string,Promise<Asset>>();
 const discardedWidgets=new WeakSet<HTMLElement>();
-// 1.158：音频/视频播放器按附件 id 复用，切卡片时不重建（避免控件动画重播的闪）
+// 音频/视频播放器按附件 id 复用，切卡片时不重建（避免控件动画重播的闪）
 const mediaCache=new Map<string,HTMLMediaElement>();
 const redraw=StateEffect.define<void>();
 const focusChanged=StateEffect.define<boolean>();
 const focusedField=StateField.define<boolean>({create:()=>false,update:(value,tr)=>{for(const effect of tr.effects)if(effect.is(focusChanged))value=effect.value;return value;}});
+
+function mapAttachments(objects:AttachmentObject[],changes:ChangeDesc):AttachmentObject[]{
+  if(changes.empty||!objects.length)return objects;
+  return objects.flatMap(object=>{
+    const at=changes.mapPos(object.at,1,MapMode.TrackAfter);
+    return at===null?[]:at===object.at?[object]:[{...object,at}];
+  });
+}
+const setAttachmentObjects=StateEffect.define<AttachmentObject[]>({map:mapAttachments});
+const attachmentField=StateField.define<AttachmentObject[]>({
+  create:()=>[],
+  update:(objects,tr)=>{
+    const replacement=tr.effects.find(effect=>effect.is(setAttachmentObjects));
+    return replacement?.value??mapAttachments(objects,tr.changes);
+  },
+  toJSON:objects=>objects,
+  fromJSON:value=>Array.isArray(value)?value:[],
+});
+const clipboardAttachmentType='application/x-kasaneri-attachments';
 
 function assetInfo(id:string):Promise<Asset> {
   let result=assets.get(id);
@@ -57,10 +122,12 @@ function assetInfo(id:string):Promise<Asset> {
 
 class RichWidget extends WidgetType {
   constructor(readonly type:'math'|'markdown'|'media'|'link'|'external',readonly value:string,
-    readonly onNavigate:(id:string)=>void,readonly autoplay=false,readonly onImageContext?:EditorOptions['onImageContext']){
+    readonly onNavigate:(id:string)=>void,readonly onError:(message:string)=>void,
+    readonly autoplay=false,readonly onImageContext?:EditorOptions['onImageContext'],readonly external?:ExternalLink,readonly attachment?:AttachmentObject){
     super();
   }
-  eq(other:RichWidget):boolean { return this.type===other.type&&this.value===other.value&&this.autoplay===other.autoplay; }
+  eq(other:RichWidget):boolean { return this.type===other.type&&this.value===other.value&&this.autoplay===other.autoplay&&
+    this.attachment?.at===other.attachment?.at&&this.attachment?.embed===other.attachment?.embed; }
   toDOM(view:EditorView):HTMLElement {
     const wrapper=document.createElement('span');
     wrapper.className='reading-rich reading-rich-'+this.type;
@@ -72,10 +139,15 @@ class RichWidget extends WidgetType {
       catch{wrapper.textContent=this.value;}
     }else if(this.type==='markdown'){
       wrapper.innerHTML=DOMPurify.sanitize(renderer.render(this.value));
-    }else if(this.type==='external'){
-      const match=this.value.match(/^\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)$/);
-      const link=document.createElement('a');link.href=match?.[2]||this.value;
-      link.textContent=match?.[1]||this.value;link.target='_blank';link.rel='noopener noreferrer';wrapper.append(link);
+      for(const link of wrapper.querySelectorAll('a')){
+        const url=externalUrl(link.dataset.fileLink||link.getAttribute('href')||'');
+        if(url)decorateExternalLink(link,url,this.onError);
+      }
+    }else if(this.type==='external'&&this.external){
+      const link=document.createElement('a');
+      link.innerHTML=DOMPurify.sanitize(renderer.renderInline(this.external.label),{ALLOWED_TAGS:['code','em','strong'],ALLOWED_ATTR:[]});
+      decorateExternalLink(link,this.external.url,this.onError);
+      wrapper.append(link);
     }else if(this.type==='link'){
       const match=this.value.match(/^\[\[([^|\]]+)(?:\|([^\]]*))?\]\]$/);
       const link=document.createElement('a');
@@ -84,49 +156,58 @@ class RichWidget extends WidgetType {
       link.onclick=event=>{event.preventDefault();if(match)this.onNavigate(match[1]);};
       wrapper.append(link);
     }else{
-      const embed=parseAssetEmbed(this.value);
-      if(!embed){wrapper.textContent=this.value;return wrapper;}
+      const object=this.attachment;
+      const embed=object?.embed;
+      if(!object||!embed)return wrapper;
       wrapper.classList.add('reading-media');
-      // 1.137：不先写「载入附件…」再换内容——切卡片时那行字会闪一下；留同高空位，加载完直接画上去
+      // 不先写「载入附件…」再换内容——切卡片时那行字会闪一下；留同高空位，加载完直接画上去
       wrapper.textContent='';wrapper.style.minHeight='22px';
       const id=embed.assetId;
       assetInfo(id).then(asset=>{
         if(discardedWidgets.has(wrapper))return;
         if(!asset){wrapper.textContent=t('附件缺失');return;}
         wrapper.replaceChildren();
-        const url=window.reading.mediaUrl(id);
-        if(asset.mime.startsWith('image/')){
+        const url=window.reading.mediaUrl(id),filename=embed.name||asset.filename;
+        const isImage=asset.mime.startsWith('image/');
+        const current=()=>!discardedWidgets.has(wrapper)&&view.dom.isConnected&&!view.state.readOnly&&
+          view.state.field(attachmentField).find(entry=>entry.at===object.at&&entry.embed===embed);
+        const updateEmbed=(patch:Partial<AssetEmbed>)=>{
+          const item=current();if(!item)return;
+          const objects=view.state.field(attachmentField).map(entry=>entry===item?{...entry,embed:{...embed,...patch}}:entry);
+          view.dispatch({effects:setAttachmentObjects.of(objects),userEvent:'input.attachment',annotations:isolateHistory.of('full')});
+        };
+        wrapper.oncontextmenu=event=>{
+          const item=current();
+          if(!item||!this.onImageContext)return;
+          event.preventDefault();event.stopPropagation();
+          const image=wrapper.querySelector('img');
+          this.onImageContext(event,{
+            from:projectedOffset(view.state.field(attachmentField),item.at),token:formatAssetEmbed(embed),
+            url:image?.src||url,filename,assetId:id,isImage,masked:!!embed.mask,
+            rename:name=>{const next=name.trim();if(next&&next!==filename)updateEmbed({name:next});},
+            removeReference:()=>{
+              if(!current())return;
+              view.dispatch({changes:{from:item.at,to:item.at+1},selection:{anchor:item.at},
+                userEvent:'delete',annotations:isolateHistory.of('full')});
+              view.focus();
+            },
+          });
+        };
+        if(isImage){
           const image=document.createElement('img');
           const requestedWidth=Number(embed.display.match(/^\d+/)?.[0])||0;
-          image.loading='lazy';image.decoding='async';image.src=url+'?preview='+(requestedWidth>1600?3200:1600);image.alt=asset.filename;
+          image.loading='lazy';image.decoding='async';image.src=url+'?preview='+(requestedWidth>1600?3200:1600);image.alt=filename;
           image.draggable=false;
           image.onload=()=>view.requestMeasure();
           const savedWidth=embed.display.match(/^(\d+)(?:x\d+)?$/)?.[1];
           if(savedWidth)image.style.width=savedWidth+'px';
-          const tokenPosition=():number|undefined=>{
-            if(discardedWidgets.has(wrapper)||!view.dom.isConnected)return;
-            const text=view.state.doc.toString(),near=view.posAtDOM(wrapper);
-            const positions:number[]=[];
-            for(let at=text.indexOf(this.value);at>=0;at=text.indexOf(this.value,at+1))positions.push(at);
-            positions.sort((a,b)=>Math.abs(a-near)-Math.abs(b-near));
-            return positions[0];
-          };
-          const commitWidth=(width:number|null,knownPosition?:number)=>{
-            if(!view.dom.isConnected||view.state.readOnly)return;
-            const from=knownPosition??tokenPosition();
-            if(from===undefined||view.state.doc.sliceString(from,from+this.value.length)!==this.value)return;
-            const insert=formatAssetEmbed({...embed,display:width?String(width):''});
-            if(insert===this.value)return;
-            view.dispatch({changes:{from,to:from+this.value.length,insert},selection:{anchor:Math.max(0,from-1)},
-              userEvent:'input.resize-image',annotations:isolateHistory.of('full')});
-            view.focus();
-          };
+          const commitWidth=(width:number)=>{if(String(width)!==embed.display)updateEmbed({display:String(width)});};
           const handle=document.createElement('button');handle.className='image-resize-handle';
-          handle.setAttribute('aria-label',t('拖动调整图片大小；双击恢复原始大小'));
+          handle.setAttribute('aria-label',t('拖动调整图片大小'));
           handle.onpointerdown=event=>{
             if(event.button!==0||view.state.readOnly)return;
             event.preventDefault();event.stopPropagation();handle.setPointerCapture(event.pointerId);
-            const sourcePosition=tokenPosition();if(sourcePosition===undefined)return;
+            if(!current())return;
             const original=image.getBoundingClientRect(),x=event.clientX,y=event.clientY;
             let width=Math.round(original.width);
             wrapper.classList.add('is-resizing');
@@ -139,36 +220,27 @@ class RichWidget extends WidgetType {
             const finish=()=>{
               window.removeEventListener('pointermove',move);window.removeEventListener('pointerup',finish);
               window.removeEventListener('pointercancel',finish);window.removeEventListener('blur',finish);
-              wrapper.classList.remove('is-resizing');commitWidth(width,sourcePosition);
+              wrapper.classList.remove('is-resizing');commitWidth(width);
             };
             window.addEventListener('pointermove',move);window.addEventListener('pointerup',finish);
             window.addEventListener('pointercancel',finish);window.addEventListener('blur',finish);
           };
           handle.onkeydown=event=>{
-            if(!['ArrowLeft','ArrowRight','Home'].includes(event.key))return;
+            if(!['ArrowLeft','ArrowRight'].includes(event.key))return;
             event.preventDefault();event.stopPropagation();
-            commitWidth(event.key==='Home'?null:Math.max(64,Math.min(4096,Math.round(image.getBoundingClientRect().width)+(event.key==='ArrowLeft'?-20:20))));
+            commitWidth(Math.max(64,Math.min(4096,Math.round(image.getBoundingClientRect().width)+(event.key==='ArrowLeft'?-20:20))));
           };
-          handle.ondblclick=event=>{event.preventDefault();commitWidth(null);};
           wrapper.classList.add('reading-image');
           if(embed.mask){
             const frame=document.createElement('span');frame.className='reading-image-frame';
             const mask=document.createElement('span');mask.className='reading-image-mask';mask.setAttribute('aria-hidden','true');
             positionBox(mask,embed.mask);
             frame.append(image,mask);wrapper.append(frame);
-          }else{
-            wrapper.append(image);
-            image.oncontextmenu=event=>{
-              if(view.state.readOnly||!this.onImageContext)return;
-              const from=tokenPosition();if(from===undefined)return;
-              event.preventDefault();event.stopPropagation();
-              this.onImageContext(event,{from,token:this.value,url:image.src,filename:asset.filename});
-            };
-          }
+          }else wrapper.append(image);
           wrapper.append(handle);
           handle.hidden=view.state.readOnly;
         }else if(asset.mime.startsWith('audio/')||asset.mime.startsWith('video/')){
-          // 1.158：播放器按附件 id 缓存复用——切卡片时不再销毁重建，避免控件重新加载/动画重播造成的闪。
+          // 播放器按附件 id 缓存复用——切卡片时不再销毁重建，避免控件重新加载/动画重播造成的闪。
           const tag=asset.mime.startsWith('audio/')?'audio':'video';
           let media=mediaCache.get(asset.id);
           if(!media||media.tagName.toLowerCase()!==tag){
@@ -178,8 +250,8 @@ class RichWidget extends WidgetType {
             mediaCache.set(asset.id,media);
             if(mediaCache.size>24)mediaCache.delete(mediaCache.keys().next().value!);
           }
-          // 1.88（N17）：全局开关打开时自动播放。
-          // 1.161：照 Anki 的做法——自动播放时只显示一个圆形 ▶ 按钮（不带进度条，所以没有播放动画可闪）；
+          // 全局开关打开时自动播放。
+          // 照 Anki 的做法——自动播放时只显示一个圆形 ▶ 按钮（不带进度条，所以没有播放动画可闪）；
           // 想重播/拖进度时点它，才展开原生控件。
           if(this.autoplay){
             media.autoplay=true;
@@ -188,7 +260,7 @@ class RichWidget extends WidgetType {
             play.type='button';play.className='media-play';play.textContent='▶';play.title=t('播放 / 重播（点开可调进度）');
             play.onclick=event=>{event.stopPropagation();media!.controls=true;play.remove();const result=media!.play?.();if(result)void result.catch(()=>{});};
             wrapper.append(play);
-            // 1.201：清掉 1.160 的 220ms 延迟自动播放（当时为防闪加的补丁；播放器缓存复用已经解决闪，
+            // 清掉 旧版 的 220ms 延迟自动播放（当时为防闪加的补丁；播放器缓存复用已经解决闪，
             // 保留 preload=metadata 和 canplay 重试即可）。
             const startPlayback=()=>{const result=media!.play?.();if(result)void result.catch(()=>{media!.addEventListener('canplay',()=>void media!.play?.().catch(()=>{}),{once:true});});};
             startPlayback();
@@ -196,7 +268,7 @@ class RichWidget extends WidgetType {
           wrapper.append(media);
         }else{
           const link=document.createElement('a');
-          link.textContent=asset.filename;link.href=url;link.download=asset.filename;
+          link.textContent=filename;link.href=url;link.download=filename;
           wrapper.append(link);
         }
         view.requestMeasure();
@@ -222,6 +294,56 @@ class RichWidget extends WidgetType {
   }
 }
 
+const codeLine=Decoration.line({class:'md-code-line'});
+const firstCodeLine=Decoration.line({class:'md-code-line-start'});
+const lastCodeLine=Decoration.line({class:'md-code-line-end'});
+const hiddenCodeFence=Decoration.replace({});
+
+class CodeBlockCopy extends WidgetType {
+  constructor(readonly code:string,readonly language:string){
+    super();
+  }
+
+  eq(other:CodeBlockCopy):boolean {
+    return this.code===other.code&&this.language===other.language;
+  }
+
+  toDOM(view:EditorView):HTMLElement {
+    const document=view.dom.ownerDocument;
+    const button=document.createElement('button');
+    button.type='button';
+    button.className='md-code-copy';
+    if(this.language){
+      const label=document.createElement('span');
+      label.className='md-code-language';
+      label.textContent=this.language;
+      button.append(label);
+    }
+    const glyph=document.createElement('span');
+    button.append(glyph);
+    const update=(label:string,iconName:'copy'|'check')=>{
+      button.title=label;
+      button.setAttribute('aria-label',label);
+      setIcon(glyph,iconName);
+    };
+    const reset=()=>update(t('复制代码'),'copy');
+    let timer=0;
+    reset();
+    button.addEventListener('mousedown',event=>event.preventDefault());
+    button.addEventListener('click',async()=>{
+      try{
+        await navigator.clipboard.writeText(this.code);
+        update(t('已复制'),'check');
+      }catch{
+        update(t('复制失败'),'copy');
+      }
+      window.clearTimeout(timer);
+      timer=window.setTimeout(reset,1500);
+    });
+    return button;
+  }
+}
+
 const highlighting=HighlightStyle.define([
   {tag:tags.heading1,fontSize:'1.8em',fontWeight:'700'},
   {tag:tags.heading2,fontSize:'1.5em',fontWeight:'650'},
@@ -244,14 +366,17 @@ export class ReadingEditor {
 
   constructor(host:HTMLElement,options:EditorOptions){
     this.options=options;
+    const initial=options.document?.objects.length?options.document:readLegacyDocument(options.value);
     const decorationField=StateField.define<DecorationSet>({
       create:state=>this.decorations(state),
-      update:(old,tr)=>tr.docChanged||tr.selection||tr.effects.some(effect=>effect.is(redraw))
+      update:(old,tr)=>tr.docChanged||tr.selection||tr.effects.some(effect=>effect.is(redraw)||effect.is(setAttachmentObjects))
         ||syntaxTree(tr.startState)!==syntaxTree(tr.state)?this.decorations(tr.state):old,
       provide:field=>EditorView.decorations.from(field),
     });
     const extensions=[
-      history(),focusedField,EditorState.readOnly.of(!!options.readOnly),EditorView.editable.of(!options.readOnly),EditorView.lineWrapping,markdown({base:markdownLanguage}),syntaxHighlighting(highlighting),decorationField,
+      history(),focusedField,EditorState.readOnly.of(!!options.readOnly),EditorView.editable.of(!options.readOnly),EditorView.lineWrapping,markdown({base:markdownLanguage}),syntaxHighlighting(highlighting),attachmentField.init(()=>initial.objects),decorationField,dropCursor(),
+      invertedEffects.of(tr=>tr.startState.field(attachmentField)!==tr.state.field(attachmentField)?[setAttachmentObjects.of(tr.startState.field(attachmentField))]:[]),
+      EditorView.atomicRanges.of(view=>view.state.field(decorationField).update({filter:(_from,_to,value)=>value.spec.widget?.type==='media'})),
       EditorState.phrases.of({
         'Control character':t('控制字符'),'close':t('关闭'),'Fold line':t('折叠行'),'Unfold line':t('展开行'),
         'Folded lines':t('已折叠行'),'Unfolded lines':t('已展开行'),'to':t('至'),
@@ -260,15 +385,19 @@ export class ReadingEditor {
       EditorView.contentAttributes.of({'aria-label':options.label,spellcheck:'false',tabindex:'0'}),
       keymap.of([...defaultKeymap,...historyKeymap]),
       EditorView.updateListener.of(update=>{
-        if(update.docChanged)options.onChange(update.state.doc.toString(),update.transactions.every(tr=>tr.isUserEvent('input.type')));
+        const objects=update.state.field(attachmentField);
+        if(update.docChanged||objects!==update.startState.field(attachmentField)){
+          const document={text:update.state.doc.toString(),objects};
+          options.onChange(projectDocument(document),update.transactions.every(tr=>tr.isUserEvent('input.type')),document);
+        }
       }),
       EditorView.domEventHandlers({
         focus:(_,view)=>{queueMicrotask(()=>{if(!this.destroyed)view.dispatch({effects:[focusChanged.of(true),redraw.of()]});});return false;},
         blur:(_,view)=>{queueMicrotask(()=>{if(!this.destroyed)view.dispatch({effects:[focusChanged.of(false),redraw.of()]});});return false;},
-        // 1.52：Ctrl（macOS 为 Cmd）+ 点击摘录/检测卡高亮 → 打开对应卡片（类似 Obsidian 的 Ctrl+点击链接）
+        // Ctrl（macOS 为 Cmd）+ 点击摘录/检测卡高亮 → 打开对应卡片（类似 Obsidian 的 Ctrl+点击链接）
         mousedown:(event)=>{
           if(!event.ctrlKey&&!event.metaKey)return false;
-          // 1.65：沿祖先链收集所有被点中的锚点；高亮被关掉时这些 mark 根本不存在，自然也跳不了
+          // 沿祖先链收集所有被点中的锚点；高亮被关掉时这些 mark 根本不存在，自然也跳不了
           const start=event.target as HTMLElement|null;
           const ids:string[]=[];let node:HTMLElement|null=start;
           while(node&&node!==this.view?.contentDOM){
@@ -292,10 +421,12 @@ export class ReadingEditor {
           if(view.state.readOnly)return false;
           const at=view.posAtCoords({x:event.clientX,y:event.clientY})??view.state.selection.main.head;
           event.preventDefault();
-          options.onAttachmentMenu(event,()=>this.pickAttachments(at));
+          options.onInsertMenu(event,()=>this.pickAttachments(at),()=>void this.insertFileLink(at));
           return true;
         },
-        paste:(event)=>this.handleFiles(event.clipboardData?.files,event),
+        copy:event=>this.copyObjects(event,false),
+        cut:event=>this.copyObjects(event,true),
+        paste:event=>this.handleFiles(event.clipboardData?.files,event)||this.pasteObjects(event),
         drop:(event,view)=>{
           const files=event.dataTransfer?.files;
           if(!files?.length)return false;
@@ -311,10 +442,10 @@ export class ReadingEditor {
     ];
     let state:EditorState;
     try{
-      state=options.snapshot?.doc===options.value
-        ?EditorState.fromJSON(options.snapshot,{extensions},{history:historyField})
-        :EditorState.create({doc:options.value,extensions});
-    }catch{state=EditorState.create({doc:options.value,extensions});}
+      state=options.snapshot?.doc===initial.text
+        ?EditorState.fromJSON(options.snapshot,{extensions},{history:historyField,attachments:attachmentField})
+        :EditorState.create({doc:initial.text,extensions});
+    }catch{state=EditorState.create({doc:initial.text,extensions});}
     this.view=new EditorView({state,parent:host});
   }
 
@@ -378,49 +509,94 @@ export class ReadingEditor {
     document.body.append(input);
     input.click();
   }
+  private async insertFileLink(at:number):Promise<void>{
+    const before=this.view.state.doc;
+    try{
+      const file=await window.reading.request<{name:string;url:string}|null>('pickFileLink');
+      if(!file||this.destroyed||this.view.state.readOnly)return;
+      if(this.view.state.doc!==before)at=this.view.state.selection.main.head;
+      const name=file.name.replace(/[\r\n]/g,' ').replace(/[\\[\]`*_~!<&]/g,'\\$&');
+      const insert='['+name+'](<'+file.url+'>)';
+      this.view.dispatch({changes:{from:at,insert},selection:{anchor:at+insert.length},userEvent:'input'});
+      this.view.focus();
+    }catch(error){this.options.onError(error instanceof Error?error.message:String(error));}
+  }
+
   private async insertFiles(files:File[],from:number,to:number,replace:boolean):Promise<void>{
     if(this.destroyed||this.view.state.readOnly)return;
     const before=this.view.state.doc;
     try{
-      const links=await this.options.onAttachments(files);
-      if(this.destroyed||this.view.state.readOnly||!links.length)return;
+      const filesInLibrary=await this.options.onAttachments(files);
+      if(this.destroyed||this.view.state.readOnly||!filesInLibrary.length)return;
       if(this.view.state.doc!==before){
         const selection=this.view.state.selection.main;
         from=replace?selection.from:selection.head;
         to=replace?selection.to:selection.head;
       }
-      const insert='\n'+links.join('\n')+'\n';
-      this.view.dispatch({
-        changes:{from,to,insert},selection:{anchor:from+insert.length},userEvent:'input.paste',
-      });
+      const insert='\n'+filesInLibrary.map(()=>attachmentCharacter).join('\n')+'\n';
+      const objects=filesInLibrary.map((asset,index)=>({at:index*2+1,embed:{assetId:asset.id,display:'',boxes:[],mask:null}}));
+      this.insertDocument(from,to,{text:insert,objects});
       this.view.focus();
     }catch(error){this.options.onError(error instanceof Error?error.message:String(error));}
   }
 
+  private insertDocument(from:number,to:number,document:AttachmentDocument):void{
+    const state=this.view.state;
+    const changes=state.changes({from,to,insert:document.text});
+    const objects=mapAttachments(state.field(attachmentField),changes)
+      .concat(document.objects.map(entry=>({...entry,at:entry.at+from}))).sort((a,b)=>a.at-b.at);
+    this.view.dispatch({changes,effects:setAttachmentObjects.of(objects),selection:{anchor:from+document.text.length},
+      userEvent:'input.paste',annotations:isolateHistory.of('full')});
+  }
+
+  private copyObjects(event:ClipboardEvent,cut:boolean):boolean{
+    const state=this.view.state,{from,to}=state.selection.main;
+    const objects=state.field(attachmentField).filter(entry=>entry.at>=from&&entry.at<to)
+      .map(entry=>({...entry,at:entry.at-from}));
+    if(!objects.length||!event.clipboardData)return false;
+    const text=state.doc.sliceString(from,to);
+    event.preventDefault();
+    event.clipboardData.setData('text/plain',text.replaceAll(attachmentCharacter,''));
+    event.clipboardData.setData(clipboardAttachmentType,JSON.stringify({text,objects}));
+    if(cut&&!state.readOnly)this.view.dispatch({changes:{from,to},userEvent:'delete.cut',annotations:isolateHistory.of('full')});
+    return true;
+  }
+
+  private pasteObjects(event:ClipboardEvent):boolean{
+    if(this.view.state.readOnly)return false;
+    const raw=event.clipboardData?.getData(clipboardAttachmentType);
+    if(!raw)return false;
+    let document:AttachmentDocument;
+    try{document=JSON.parse(raw) as AttachmentDocument;}catch{return false;}
+    if(!validAttachmentDocument(document))return false;
+    event.preventDefault();
+    const {from,to}=this.view.state.selection.main;
+    this.insertDocument(from,to,document);
+    return true;
+  }
+
   private decorations(state:EditorState):DecorationSet {
-    const text=state.doc.toString(),selection=state.selection.main;
-    // 1.21：光标落在公式边界也算"编辑中"（±1 字符容差）。
+    const text=state.doc.toString(),selection=state.selection.main,objects=state.field(attachmentField);
+    const editing=!state.readOnly&&state.field(focusedField);
+    // 光标落在公式边界也算"编辑中"（±1 字符容差）。
     // 原因：光标在 `\]` 右侧时旧逻辑判定为公式外 → 立刻渲染，导致 `]` 永远点不到、
     // 也没法把光标放到公式末尾。Obsidian 的体验是"点渲染块先进入源码，离开一点才恢复渲染"。
-    const inside=(from:number,to:number)=>!state.readOnly&&state.field(focusedField)&&
+    const inside=(from:number,to:number)=>editing&&
       (selection.empty?selection.from>=from-1&&selection.from<=to+1:selection.from<=to+1&&selection.to>=from-1);
-    const result:any[]=[];
+    const result:DecorationRange<Decoration>[]=[];
     const replaced:Array<[number,number]>=[];
     const overlaps=(from:number,to:number)=>replaced.some(([a,b])=>from<b&&to>a);
-    const inCode=(position:number)=>{
-      let syntax=syntaxTree(state).resolveInner(position,1);
-      while(syntax.parent){
-        if(/Code|HTMLBlock/.test(syntax.name))return true;
-        syntax=syntax.parent;
+    const within=(position:number,names:RegExp)=>{
+      for(let syntax=syntaxTree(state).resolveInner(position,1);syntax.parent;syntax=syntax.parent){
+        if(names.test(syntax.name))return true;
       }
       return false;
     };
-    const addRich=(from:number,to:number,type:RichWidget['type'],value:string,block=false)=>{
-      if(overlaps(from,to)||inCode(from))return;
-      const widget=new RichWidget(type,value,this.options.onNavigate,!!this.options.audioAutoplay,this.options.onImageContext);
-      const active=inside(from,to);
-      if(active){
-        if(type==='media')result.push(Decoration.widget({widget,block:true,side:1}).range(state.doc.lineAt(to).to));
+    const inCode=(position:number)=>within(position,/Code|HTMLBlock/);
+    const addRich=(from:number,to:number,type:RichWidget['type'],value:string,block=false,external?:ExternalLink,object?:AttachmentObject)=>{
+      if(overlaps(from,to)||(type!=='media'&&inCode(from)))return;
+      const widget=new RichWidget(type,value,this.options.onNavigate,this.options.onError,!!this.options.audioAutoplay,this.options.onImageContext,external,object);
+      if(type!=='media'&&inside(from,to)){
         if(type==='math'){
           result.push(Decoration.mark({class:'math-source'}).range(from,to));
           for(const token of value.matchAll(/\\[A-Za-z]+|\\[()[\]]|\$\$?|[{}]|\d+(?:\.\d+)?/g)){
@@ -433,28 +609,60 @@ export class ReadingEditor {
       result.push(Decoration.replace({widget,block}).range(from,to));
       replaced.push([from,to]);
     };
-    for(const match of text.matchAll(assetEmbeds)){
-      const from=match.index!,to=from+match[0].length,line=state.doc.lineAt(from);
-      const block=text.slice(line.from,line.to).trim()===match[0];
-      addRich(block?line.from:from,block?line.to:to,'media',match[0],block);
+    for(const object of objects){
+      const {at}=object,line=state.doc.lineAt(at),block=line.text===attachmentCharacter;
+      addRich(at,at+1,'media','',block,undefined,object);
     }
     for(const match of text.matchAll(/\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\)|\$\$[\s\S]+?\$\$|(?<![\\$])\$(?!\$)[^\n$]+?\$(?!\$)/g)){
       const from=match.index!,to=from+match[0].length;
+      if(within(from,/^Link$/))continue;
       const first=state.doc.lineAt(from),last=state.doc.lineAt(to);
       const block=(match[0].startsWith('$$')||match[0].startsWith('\\['))&&text.slice(first.from,last.to).trim()===match[0];
       addRich(block?first.from:from,block?last.to:to,'math',match[0],block);
     }
-    // N18（1.87）：`[[...]]` 不做特殊渲染——本项目不是 Obsidian、没有双链笔记功能，
-    // 一律按原文显示。附件引用统一带 `!` 前缀（走上面的媒体规则），不受影响。
-    for(const match of text.matchAll(/(?<!!)\[[^\]]+\]\(https?:\/\/[^\s)]+\)/g)){
-      addRich(match.index!,match.index!+match[0].length,'external',match[0]);
-    }
     syntaxTree(state).iterate({enter:node=>{
-      if(node.name==='Table'&&!inside(node.from,node.to)){
-        addRich(node.from,node.to,'markdown',text.slice(node.from,node.to),true);
+      if(node.name==='FencedCode'){
+        const block=node.node;
+        const [opening,closing]=block.getChildren('CodeMark');
+        if(!opening)return false;
+
+        const first=state.doc.lineAt(opening.from),last=state.doc.lineAt(block.to);
+        for(let number=first.number;number<=last.number;number++){
+          result.push(codeLine.range(state.doc.line(number).from));
+        }
+        result.push(firstCodeLine.range(first.from),lastCodeLine.range(last.from));
+
+        // Keep each source line editable so clicks, arrow keys and selections use CodeMirror's positions.
+        const active=editing&&selection.from<=last.to&&selection.to>=first.from;
+        if(!active){
+          result.push(hiddenCodeFence.range(opening.from,first.to));
+          if(closing)result.push(hiddenCodeFence.range(closing.from,last.to));
+
+          const code=block.getChildren('CodeText').map(part=>text.slice(part.from,part.to)).join('');
+          const info=block.getChild('CodeInfo');
+          const language=info?text.slice(info.from,info.to).split(/\s+/,1)[0]:'';
+          result.push(Decoration.widget({widget:new CodeBlockCopy(code,language),side:1}).range(first.to));
+        }
+        return false;
       }
-      // 1.133：`[文字]` 这类没有 URL 的方括号不该按链接着色（本项目没有双链，方括号就是普通字符）。
-      // 只保留真正的链接 `[x](url)`（已由上面的 external 规则渲染）与附件 `![[asset:…]]`。
+      if(node.name==='Table'&&!inside(node.from,node.to)&&!overlaps(node.from,node.to)){
+        addRich(node.from,node.to,'markdown',text.slice(node.from,node.to),true);
+        return false;
+      }
+      if(node.name==='Link'){
+        const [open,close,paren]=node.node.getChildren('LinkMark');
+        const target=node.node.getChild('URL');
+        if(open&&close&&paren&&target){
+          const address=text.slice(target.from,target.to).replace(/^<|>$/g,'').replace(/\\([()])/g,'$1');
+          const url=externalUrl(address);
+          if(url){
+            addRich(node.from,node.to,'external',text.slice(node.from,node.to),false,{url,label:text.slice(open.to,close.from)});
+            return false;
+          }
+        }
+      }
+      // `[文字]` 这类没有 URL 的方括号不该按链接着色（本项目没有双链，方括号就是普通字符）。
+      // 外部链接和附件由各自的控件渲染。
       if(node.name==='Link'&&!overlaps(node.from,node.to)&&text[node.to]!=='('&&!inside(node.from,node.to)){
         result.push(Decoration.mark({class:'plain-bracket-text'}).range(node.from,node.to));
       }
@@ -469,21 +677,25 @@ export class ReadingEditor {
       const from=match.index!,to=from+match[0].length;
       if(!overlaps(from,to)&&!inCode(from))result.push(Decoration.mark({class:'plain-cloze-placeholder'}).range(from,to));
     }
+    const source=this.options.anchors.length?projectDocument({text,objects}):text;
     for(const anchor of this.options.anchors){
       if(anchor.section&&anchor.section!==this.options.section)continue;
       const type=anchor.highlight||'extract';if(this.options.highlights?.[type]===false)continue;
-      const from=locateAnchor(text,anchor),to=from+anchor.quote.length;
-      // 1.65：同一段文字可能有多条锚点（重复摘录/检测卡），这里不再去重，让点击时能列出候选卡片
+      const start=locateAnchor(source,anchor);
+      const from=documentOffset(objects,start),to=documentOffset(objects,start+anchor.quote.length,true);
+      // 同一段文字可能有多条锚点（重复摘录/检测卡），这里不再去重，让点击时能列出候选卡片
   if(from>=0)result.push(Decoration.mark({class:'irtree-extracted irtree-extracted-'+type,
-        // 1.52：把目标节点 id 写到 DOM 上，配合 Ctrl+点击跳转
+        // 把目标节点 id 写到 DOM 上，配合 Ctrl+点击跳转
         attributes:anchor.nodeId?{'data-anchor-node':anchor.nodeId}:undefined}).range(from,to));
     }
     return Decoration.set(result,true);
   }
 
   focus():void {this.view.focus();}
-  snapshot():any {return this.view.state.toJSON({history:historyField});}
-  /** 1.133：选区两侧切换 `**加粗**` / `*斜体*`（Ctrl+B / Ctrl+I）。已包裹则去掉。 */
+  snapshot():any {return this.view.state.toJSON({history:historyField,attachments:attachmentField});}
+  sourcePosition(at:number):number{return projectedOffset(this.view.state.field(attachmentField),at);}
+  editorPosition(at:number):number{return documentOffset(this.view.state.field(attachmentField),at);}
+  /** 选区两侧切换 `**加粗**` / `*斜体*`（Ctrl+B / Ctrl+I）。已包裹则去掉。 */
   toggleWrap(marker:string):void{
     const view=this.view;
     if(view.state.readOnly)return;
@@ -503,18 +715,21 @@ export class ReadingEditor {
     }
     if(selected.length>=marker.length*2&&selected.startsWith(marker)&&selected.endsWith(marker)){
       const inner=selected.slice(marker.length,-marker.length);
-      view.dispatch({changes:{from,to,insert:inner},selection:{anchor:from,head:from+inner.length},userEvent:'input.format',annotations:isolateHistory.of('full')});
+      view.dispatch({changes:[{from,to:from+marker.length},{from:to-marker.length,to}],selection:{anchor:from,head:from+inner.length},userEvent:'input.format',annotations:isolateHistory.of('full')});
       view.focus();return;
     }
-    view.dispatch({changes:{from,to,insert:marker+selected+marker},selection:{anchor:from+marker.length,head:to+marker.length},
+    view.dispatch({changes:[{from,insert:marker},{from:to,insert:marker}],selection:{anchor:from+marker.length,head:to+marker.length},
       userEvent:'input.format',annotations:isolateHistory.of('full')});
     view.focus();
   }
   setAnchors(anchors:Anchor[]):void {this.options.anchors=anchors;this.view.dispatch({effects:redraw.of()});}
   setHighlights(value:{extract:boolean;cloze:boolean}){this.options.highlights=value;this.view.dispatch({effects:redraw.of()});}
   selectSource(anchor:Anchor):boolean {
-    const at=locateAnchor(this.view.state.doc.toString(),anchor);
-    if(at<0)return false;
+    const {state}=this.view;
+    const source=projectDocument({text:state.doc.toString(),objects:state.field(attachmentField)});
+    const start=locateAnchor(source,anchor);
+    if(start<0)return false;
+    const at=this.editorPosition(start);
     this.view.dispatch({selection:{anchor:at,head:at+anchor.quote.length},effects:EditorView.scrollIntoView(at,{y:'center'})});
     this.view.focus();return true;
   }

@@ -1,16 +1,16 @@
 import { t } from '../core/i18n';
-import type { ChildrenPage, TreeNode,FolderCounts } from '../core/model';
+import type { ChildrenPage,DirectoryBranch, TreeNode,FolderCounts } from '../core/model';
 import {setIcon} from './icons';
-export type TreeType='topic'|'material'|'cloze';
+import { sortTreeRows,TreeSelection,updateTreeToggle,type TreeSort,type TreeType } from './tree-controls';
 
 interface Branch {items:TreeNode[];cursor:ChildrenPage['cursor'];loaded:boolean;loading:boolean}
 interface Row {node:TreeNode|null;parentId:string|null;depth:number;last:boolean;ancestors:boolean[];more?:boolean}
 export interface TreeActions {
   select:(node:TreeNode)=>void;
   context:(node:TreeNode|null,event:MouseEvent)=>void;
-  move:(node:TreeNode,parentId:string|null)=>void;
+  move:(nodes:TreeNode[],parentId:string|null,peerId?:string)=>void;
   rename:(node:TreeNode)=>void;
-  /** 1.205：点目录树空白处取消牌组聚焦。 */
+  /** 点目录树空白处取消牌组聚焦。 */
   deselect?:()=>void;
 }
 
@@ -20,9 +20,9 @@ export class DirectoryTree {
   private flattened:Row[]=[];
   private spacer:HTMLDivElement;
   private layer:HTMLDivElement;
-  private selected:string|null=null;
+  private readonly selection=new TreeSelection();
   private pendingFrame=0;
-  private dragged:TreeNode|null=null;
+  private dragged:TreeNode[]=[];
   private rendered=new Map<string,{element:HTMLElement;signature:string}>();
   private counts:Record<string,FolderCounts>={};
   private topSticky=document.createElement('div');
@@ -30,15 +30,16 @@ export class DirectoryTree {
   private indexByNode=new Map<string,number>();
   private branchEnds=new Map<string,number>();
   private types:TreeType[]=[];
+  private sort:TreeSort='position';
   private generation=0;
-  /** 1.209：双击自己判——浏览器 detail 为偶数、且 600 ms 内是同一行。 */
+  /** 双击自己判——浏览器 detail 为偶数、且 600 ms 内是同一行。 */
   private static readonly doubleClickDelay=600;
   private lastClick:{id:string;at:number}={id:'',at:0};
   private lastToggle:{id:string;at:number}={id:'',at:0};
   readonly rowHeight=28;
   readonly nodes=new Map<string,TreeNode>();
 
-  constructor(readonly host:HTMLElement,readonly actions:TreeActions){
+  constructor(readonly host:HTMLElement,readonly actions:TreeActions,private readonly expandButton:HTMLButtonElement){
     this.spacer=document.createElement('div');this.spacer.className='tree-spacer';
     this.layer=document.createElement('div');this.layer.className='tree-layer';
     host.append(this.spacer,this.layer);
@@ -58,27 +59,29 @@ export class DirectoryTree {
     });
     host.addEventListener('click',event=>{
       if((event.target as HTMLElement).closest('.tree-row'))return;
-      this.selected=null;this.render();this.actions.deselect?.();
+      this.selection.select(null);this.render();this.actions.deselect?.();
     });
-    // 1.210：行的点击统一在 layer 上代理。行元素会随选中状态重绘被换掉，
-    // 绑在行/标签上的点击会在快速连点时丢一次（mousedown 与 mouseup 落在不同元素上），
-    // 代理挂在稳定的 layer 上就不会。收展按钮自己处理，跳过。
-    this.layer.addEventListener('click',event=>{
+    // 普通行和吸顶行共用点击语义，事件委托在重绘期间保持稳定。
+    const clickRow=(event:MouseEvent)=>{
       const target=event.target as HTMLElement;
       if(target.closest('.tree-toggle'))return;
       const row=target.closest('.tree-row') as HTMLElement|null;
       const node=row?.dataset.id?this.nodes.get(row.dataset.id):undefined;
       if(node)this.rowClick(node,event);
-    });
+    };
+    this.layer.addEventListener('click',clickRow);
+    this.topSticky.addEventListener('click',clickRow);
+    this.bottomSticky.addEventListener('click',clickRow);
     host.oncontextmenu=event=>{
       if((event.target as HTMLElement).closest('.tree-row'))return;
       event.preventDefault();actions.context(null,event);
     };
-    host.ondragover=event=>{if(this.dragged?.kind==='folder'&&!(event.target as HTMLElement).closest('.tree-row')){event.preventDefault();host.classList.add('drop-root');}};
+    const rootDrop=()=>this.dragged.length>0&&this.dragged.every(node=>node.kind==='folder');
+    host.ondragover=event=>{if(rootDrop()&&!(event.target as HTMLElement).closest('.tree-row')){event.preventDefault();host.classList.add('drop-root');}};
     host.ondragleave=()=>host.classList.remove('drop-root');
     host.ondrop=event=>{
-      if(this.dragged?.kind!=='folder'||(event.target as HTMLElement).closest('.tree-row'))return;
-      event.preventDefault();host.classList.remove('drop-root');this.actions.move(this.dragged,null);this.dragged=null;
+      if(!rootDrop()||(event.target as HTMLElement).closest('.tree-row'))return;
+      event.preventDefault();host.classList.remove('drop-root');this.actions.move(this.dragged,null);this.dragged=[];
     };
     new ResizeObserver(()=>this.render()).observe(host);
   }
@@ -86,31 +89,92 @@ export class DirectoryTree {
   private key(parentId:string|null):string{return parentId||'$root';}
 
   async initialize():Promise<void>{await this.load(null);this.flatten();}
-  selectedNode():TreeNode|null{return this.selected?this.nodes.get(this.selected)||null:null;}
-  selectNode(id:string):void{this.selected=id;this.render();}
+  selectedNode():TreeNode|null{return this.selection.anchor?this.nodes.get(this.selection.anchor)||null:null;}
+  selectNode(id:string):void{
+    if(this.selection.anchor!==id)this.selection.select(id);
+    this.render();
+  }
+  selectedForMove(node:TreeNode):TreeNode[]{
+    if(!this.selection.includes(node.id))return [node];
+    return this.flattened.flatMap(({node})=>node&&this.selection.includes(node.id)?[node]:[]);
+  }
+  selectMany(ids:string[]):void{this.selection.selectMany(ids);this.render();}
+  hasExpandedBranches():boolean{
+    return this.flattened.some(({node})=>node!==null&&this.expanded.has(node.id));
+  }
   setCounts(counts:Record<string,FolderCounts>):void{this.counts=counts;this.render();}
+  setSort(sort:TreeSort):void{this.sort=sort;this.flatten();}
   async setTypes(types:TreeType[]):Promise<void>{
     this.types=[...new Set(types.filter(type=>['topic','material','cloze'].includes(type)))];
     await this.reset();
   }
   async reset():Promise<void>{
-    this.generation++;this.cache.clear();this.nodes.clear();this.flatten();
-    await this.load(null);
-    for(const id of this.expanded)await this.load(id);
-    this.flatten();if(this.selected)await this.reveal(this.selected);
+    this.generation++;
+    if(this.expanded.size){
+      if(!await this.loadAllBranches())return;
+    }else{
+      this.cache.clear();
+      this.nodes.clear();
+      await this.load(null);
+    }
+    this.flatten();if(this.selection.anchor)await this.reveal(this.selection.anchor);
   }
 
-  /** 1.210：单击只选中聚焦；同一行的偶数次点击（2、4、6…）算双击，只展开/收起它自己这一级。 */
+  async expandAll():Promise<void>{
+    if(!await this.loadAllBranches())return;
+    for(const node of this.nodes.values()){
+      if(node.hasChildren)this.expanded.add(node.id);
+    }
+    this.flatten();
+  }
+
+  collapseAll():void{
+    this.expanded.clear();
+    this.flatten();
+  }
+
+  private async loadAllBranches():Promise<boolean>{
+    const generation=this.generation;
+    const branches=await window.reading.request<DirectoryBranch[]>('directoryBranches',{types:this.types});
+    if(generation!==this.generation)return false;
+    this.generation++;
+    this.cache.clear();
+    this.nodes.clear();
+    this.cache.set(this.key(null),{items:[],cursor:null,loaded:true,loading:false});
+    for(const {parentId,items} of branches){
+      this.cache.set(this.key(parentId),{items,cursor:null,loaded:true,loading:false});
+      for(const node of items)this.nodes.set(node.id,node);
+    }
+    return true;
+  }
+
+  /** 单击只选中聚焦；同一行的偶数次点击（2、4、6…）算双击，只展开/收起它自己这一级。 */
   private rowClick(node:TreeNode,event:MouseEvent):void{
+    if(event.shiftKey){
+      this.lastClick={id:'',at:0};
+      if(this.selection.extend(this.flattened.flatMap(row=>row.node?[row.node.id]:[]),node.id)){
+        this.render();
+        return;
+      }
+    }
+    if(event.ctrlKey||event.metaKey){
+      this.lastClick={id:'',at:0};this.selection.toggle(node.id);this.render();return;
+    }
     const now=Date.now();
     const sameRow=this.lastClick.id===node.id&&now-this.lastClick.at<DirectoryTree.doubleClickDelay;
     this.lastClick={id:node.id,at:now};
     const twice=sameRow&&event.detail>=2&&event.detail%2===0;
-    if(!twice){this.actions.select(node);return;}
+    if(!twice){this.focusRow(node);return;}
     // 连点两下（同一行 250ms 内已经切过）不再切回去，避免手快了看起来「没展开」。
     if(this.lastToggle.id===node.id&&now-this.lastToggle.at<250)return;
     this.lastToggle={id:node.id,at:now};
     if(node.kind==='folder'||node.hasChildren)void this.toggle(node);
+  }
+
+  private focusRow(node:TreeNode):void{
+    this.selection.select(node.id);
+    this.render();
+    this.actions.select(node);
   }
 
   private async load(parentId:string|null,more=false):Promise<void>{
@@ -120,13 +184,17 @@ export class DirectoryTree {
     branch.loading=true;this.cache.set(key,branch);
     const generation=this.generation;
     try{
-      // 1.167：目录树一次取全该层（上限 2000），不再显示「加载更多」
-      const page=await window.reading.request<ChildrenPage>('children',{parentId,limit:2000,types:this.types});
-      if(generation!==this.generation)return;
       const merged=new Map((more?branch.items:[]).map(node=>[node.id,node]));
-      for(const node of page.items){merged.set(node.id,node);this.nodes.set(node.id,node);}
+      let cursor=more?branch.cursor:null;
+      do{
+        const page:ChildrenPage=await window.reading.request('children',{parentId,cursor,limit:250,types:this.types});
+        if(generation!==this.generation)return;
+        for(const node of page.items)merged.set(node.id,node);
+        cursor=page.cursor;
+      }while(cursor);
       branch.items=[...merged.values()].sort((a,b)=>a.position-b.position||a.id.localeCompare(b.id));
-      branch.cursor=page.cursor;branch.loaded=true;
+      for(const node of branch.items)this.nodes.set(node.id,node);
+      branch.cursor=null;branch.loaded=true;
     }finally{branch.loading=false;}
   }
 
@@ -164,11 +232,11 @@ export class DirectoryTree {
       if(node.id!==id)this.expanded.add(node.id);
       parentId=node.id;
     }
-    this.selected=id;
+    if(this.selection.anchor!==id)this.selection.select(id);
     this.flatten();
     const at=this.flattened.findIndex(row=>row.node?.id===id);
     if(at>=0){
-      // 1.97：把当前卡片滚到**可视区中间**（以前只在贴边时才滚，进入复习/待办时
+      // 把当前卡片滚到**可视区中间**（以前只在贴边时才滚，进入复习/待办时
       // 当前卡片常常被顶到最底边甚至看不见，用户找不到它在哪一行）
       const rowTop=at*this.rowHeight;
       const centered=rowTop-this.host.clientHeight/2+this.rowHeight/2;
@@ -189,18 +257,20 @@ export class DirectoryTree {
   private flatten():void{
     const result:Row[]=[];
     this.indexByNode.clear();this.branchEnds.clear();
-    const stack:Array<{parentId:string|null;depth:number;ancestors:boolean[];index:number}>=[{parentId:null,depth:0,ancestors:[],index:0}];
+    const branchRows=(id:string|null)=>sortTreeRows(this.cache.get(this.key(id))?.items??[],this.sort);
+    const stack=[{parentId:null as string|null,depth:0,ancestors:[] as boolean[],index:0,items:branchRows(null)}];
     while(stack.length){
-      const frame=stack[stack.length-1],branch=this.cache.get(this.key(frame.parentId)),items=branch?.items||[];
+      const frame=stack[stack.length-1],branch=this.cache.get(this.key(frame.parentId)),items=frame.items;
       if(frame.index>=items.length){
         
         if(frame.parentId)this.branchEnds.set(frame.parentId,result.length);stack.pop();continue;
       }
       const node=items[frame.index++],last=frame.index===items.length&&!branch?.cursor;
       this.indexByNode.set(node.id,result.length);result.push({node,parentId:frame.parentId,depth:frame.depth,last,ancestors:frame.ancestors});
-      if(this.expanded.has(node.id))stack.push({parentId:node.id,depth:frame.depth+1,ancestors:[...frame.ancestors,last],index:0});
+      if(this.expanded.has(node.id))stack.push({parentId:node.id,depth:frame.depth+1,ancestors:[...frame.ancestors,last],index:0,items:branchRows(node.id)});
     }
     this.flattened=result;
+    updateTreeToggle(this.expandButton,!!this.host.closest('details')?.open&&this.hasExpandedBranches());
     this.spacer.style.height=(result.length*this.rowHeight)+'px';
     this.render();
   }
@@ -212,14 +282,18 @@ export class DirectoryTree {
     for(let index=first;index<Math.min(this.flattened.length,first+count);index++){
       const row=this.flattened[index];
       const key=row.node?'node:'+row.node.id:'more:'+row.parentId;
+      const selected=!!row.node&&this.selection.includes(row.node.id);
       const signature=JSON.stringify([index,row.depth,row.last,row.ancestors,row.parentId,row.node?.title,row.node?.kind,
-        row.node?.hasChildren,row.node?.sourceId,row.node?.parentId,row.node?.id===this.selected,this.expanded.has(row.node?.id||''),row.node?.kind==='folder'?this.counts[row.node.id]:null]);
+        row.node?.hasChildren,row.node?.sourceId,row.node?.parentId,this.expanded.has(row.node?.id||''),row.node?.kind==='folder'?this.counts[row.node.id]:null]);
       keep.add(key);
       const previous=this.rendered.get(key);
-      if(previous?.signature===signature){elements.push(previous.element);continue;}
+      if(previous?.signature===signature){
+        previous.element.classList.toggle('is-active',selected);
+        elements.push(previous.element);continue;
+      }
       const element=document.createElement('div');
       this.rendered.set(key,{element,signature});
-      element.className='tree-row'+(row.node?.id===this.selected?' is-active':'');
+      element.className='tree-row'+(selected?' is-active':'');
       element.style.top=index*this.rowHeight+'px';
       element.style.paddingLeft=(row.depth*20+3)+'px';
       if(row.depth){
@@ -242,9 +316,13 @@ export class DirectoryTree {
       element.dataset.kind=node.kind;
       const toggle=document.createElement('button');toggle.className='tree-toggle';
       const expandable=node.kind==='folder'||node.hasChildren;
-      toggle.textContent=expandable?(this.expanded.has(node.id)?'−':'+'):'';
       toggle.disabled=!expandable;
-      toggle.setAttribute('aria-label',this.expanded.has(node.id)?t('折叠'):t('展开'));
+      if(expandable){
+        const open=this.expanded.has(node.id);
+        toggle.textContent=open?'−':'+';
+        toggle.setAttribute('aria-expanded',String(open));
+        toggle.setAttribute('aria-label',open?t('折叠'):t('展开'));
+      }
       toggle.onclick=event=>{event.stopPropagation();void this.toggle(node);};
       const label=document.createElement('button');label.className='tree-label';
       label.title=node.title;
@@ -254,33 +332,20 @@ export class DirectoryTree {
       badge.setAttribute('aria-hidden','true');
       const text=document.createElement('span');text.className='tree-name';text.textContent=node.title;
       label.append(badge,text);
-      // 1.210：点击统一交给 layer 上的代理处理（见 constructor），这里不再给每行绑 onclick。
+      // 点击统一交给 layer 上的代理处理（见 constructor），这里不再给每行绑 onclick。
       // 行的元素会随选中状态重绘被换掉，绑在行上的事件会在连点时丢一次，代理就不会。
       label.onkeydown=event=>{
-        if(event.key==='ArrowRight'&&!this.expanded.has(node.id))void this.toggle(node);
+        if(event.key==='ArrowRight'&&expandable&&!this.expanded.has(node.id))void this.toggle(node);
         if(event.key==='ArrowLeft'&&this.expanded.has(node.id))void this.toggle(node);
       };
-      if(node.kind==='folder'||node.kind==='topic'&&(!node.parentId||node.parentId===node.folderId)){
-        label.draggable=true;
-        label.ondragstart=event=>{
-          this.dragged=node;
-          event.dataTransfer?.setData('application/x-reading-topic',node.id);
-          if(event.dataTransfer)event.dataTransfer.effectAllowed='move';
-        };
-        label.ondragend=()=>{this.dragged=null;this.host.classList.remove('drop-root');};
-      }
-      if(node.kind==='folder'){
-        element.ondragover=event=>{
-          if(!this.dragged||this.dragged.id===node.id)return;
-          event.preventDefault();event.stopPropagation();element.classList.add('is-drop-target');
-        };
-        element.ondragleave=()=>element.classList.remove('is-drop-target');
-        element.ondrop=event=>{
-          if(!this.dragged)return;
-          event.preventDefault();event.stopPropagation();element.classList.remove('is-drop-target');
-          this.actions.move(this.dragged,node.id);this.dragged=null;
-        };
-      }
+      label.draggable=true;
+      label.ondragstart=event=>{
+        this.dragged=this.selectedForMove(node);
+        event.dataTransfer?.setData('application/x-reading-node',node.id);
+        if(event.dataTransfer)event.dataTransfer.effectAllowed='move';
+      };
+      label.ondragend=()=>{this.dragged=[];this.host.classList.remove('drop-root');};
+      this.bindDropTarget(element,node);
       element.oncontextmenu=event=>{event.preventDefault();event.stopPropagation();this.actions.context(node,event);};
       element.append(toggle,label);
       if(node.kind==='folder'){
@@ -305,47 +370,125 @@ export class DirectoryTree {
     }
     this.renderSticky();
   }
-  private renderSticky(){
-    this.topSticky.replaceChildren();this.bottomSticky.replaceChildren();
-    if(!this.host.clientHeight||!this.flattened.length)return;
-    const first=Math.min(this.flattened.length-1,Math.floor(this.host.scrollTop/this.rowHeight)),ancestors:number[]=[];
-    let parent=this.flattened[first].parentId;
-    while(parent){const index=this.indexByNode.get(parent);if(index===undefined)break;if(index*this.rowHeight<this.host.scrollTop)ancestors.unshift(index);parent=this.flattened[index].parentId;}
-    const limit=Math.min(3,Math.max(1,Math.floor(this.host.clientHeight/this.rowHeight/5)));
-    ancestors.slice(-limit).forEach((index,level)=>{
-      const element=this.stickyRow(index,'top'),node=this.flattened[index].node!,end=this.branchEnds.get(node.id)||this.flattened.length;
-      element.style.transform=`translateY(${Math.min(0,end*this.rowHeight-this.host.scrollTop-(level+1)*this.rowHeight)}px)`;this.topSticky.append(element);
-    });
-    const last=Math.floor((this.host.scrollTop+this.host.clientHeight)/this.rowHeight);let siblingParent:string|null|undefined;
-    for(let i=last+1;i<this.flattened.length&&this.bottomSticky.children.length<limit;i++){
-      const row=this.flattened[i];if(row.node?.kind!=='folder')continue;
-      if(siblingParent===undefined)siblingParent=row.parentId;if(row.parentId!==siblingParent)continue;
-      this.bottomSticky.append(this.stickyRow(i,'bottom'));
+  private bindDropTarget(element:HTMLElement,target:TreeNode):void{
+    const folder=target.kind==='folder';
+    const parentId=folder?target.id:target.parentId;
+    const canDrop=()=>this.dragged.length>0&&
+      !this.dragged.some(node=>node.id===target.id)&&
+      (folder||(parentId!==null&&(
+        this.nodes.get(parentId)?.kind==='folder'||this.dragged.every(node=>node.kind!=='folder')
+      )));
+    const marker=folder?'is-drop-target':'is-list-drop-target';
+    element.ondragover=event=>{
+      if(!canDrop())return;
+      event.preventDefault();event.stopPropagation();
+      if(event.dataTransfer)event.dataTransfer.dropEffect='move';
+      element.classList.add(marker);
+    };
+    element.ondragleave=()=>element.classList.remove(marker);
+    element.ondrop=event=>{
+      if(!canDrop())return;
+      event.preventDefault();event.stopPropagation();
+      element.classList.remove(marker);
+      const nodes=this.dragged;this.dragged=[];
+      this.actions.move(nodes,parentId,folder?undefined:target.id);
+    };
+  }
+
+  private rootIndex(index:number):number{
+    let parent=this.flattened[index].parentId;
+    while(parent){
+      const parentIndex=this.indexByNode.get(parent);
+      if(parentIndex===undefined)break;
+      index=parentIndex;
+      parent=this.flattened[index].parentId;
     }
+    return index;
+  }
+
+  private renderSticky():void{
+    if(!this.host.clientHeight||!this.flattened.length){
+      this.topSticky.replaceChildren();this.bottomSticky.replaceChildren();
+      return;
+    }
+    const last=Math.min(this.flattened.length-1,
+      Math.ceil((this.host.scrollTop+this.host.clientHeight)/this.rowHeight)-1);
+    const branchIndex=this.rootIndex(last);
+    const branch=this.flattened[branchIndex].node;
+    // Pin the first following top-level folder beneath the viewport.
+    const below:number[]=[];
+    for(let index=(branch&&this.branchEnds.get(branch.id))??(last+1);index<this.flattened.length;){
+      const node=this.flattened[index].node;
+      if(node?.kind==='folder'){
+        below.push(index);
+        break;
+      }
+      index=(node&&this.branchEnds.get(node.id))??(index+1);
+    }
+    this.renderStickyRows(this.topSticky,this.topAncestorIndices(below.length),'top');
+    this.renderStickyRows(this.bottomSticky,below,'bottom');
+  }
+
+  private topAncestorIndices(bottomRows:number):number[]{
+    const {scrollTop,clientHeight}=this.host;
+    const limit=Math.floor(clientHeight/this.rowHeight)-bottomRows-1;
+    const ancestors:number[]=[];
+    let parentId:string|null=null;
+    for(let depth=0;depth<limit;depth++){
+      // Each pinned parent covers one row. The next level follows the
+      // branch at the first row underneath that stack.
+      const slot=scrollTop+depth*this.rowHeight;
+      let index=Math.floor(slot/this.rowHeight);
+      let row=this.flattened[index];
+      while(row&&row.depth>depth){
+        const parentIndex=row.parentId?this.indexByNode.get(row.parentId):undefined;
+        if(parentIndex===undefined)break;
+        index=parentIndex;row=this.flattened[index];
+      }
+      if(!row?.node||row.depth!==depth||row.parentId!==parentId||index*this.rowHeight>=slot)break;
+      const end=this.branchEnds.get(row.node.id);
+      // Release the old header as its last child passes the slot.
+      if(end===undefined||end*this.rowHeight<=slot+this.rowHeight)break;
+      ancestors.push(index);parentId=row.node.id;
+    }
+    return ancestors;
+  }
+
+  private renderStickyRows(container:HTMLElement,indices:number[],side:'top'|'bottom'):void{
+    const previous=new Map(Array.from(container.children,child=>{
+      const row=child as HTMLElement;
+      return [row.dataset.id!,row] as const;
+    }));
+    let next=container.firstElementChild;
+    for(const index of indices){
+      const row=this.flattened[index],node=row.node!;
+      const signature=JSON.stringify([row.depth,node.title,node.kind,node.parentId,this.expanded.has(node.id),this.counts[node.id]]);
+      const existing=previous.get(node.id);
+      const element=existing?.dataset.stickySignature===signature?existing:this.stickyRow(index,side);
+      element.dataset.stickySignature=signature;
+      element.classList.toggle('is-active',this.selection.includes(node.id));
+      element.style.paddingLeft=Math.min(row.depth*20+3,Math.max(3,this.host.clientWidth-105))+'px';
+      if(element===next)next=element.nextElementSibling;
+      else container.insertBefore(element,next);
+      if(existing===element)previous.delete(node.id);
+    }
+    for(const element of previous.values())element.remove();
   }
   private stickyRow(index:number,side:'top'|'bottom'){
-    const row=this.flattened[index],node=row.node!,element=document.createElement('div');element.className='tree-row sticky-row';element.dataset.id=node.id;element.dataset.side=side;
-    element.style.paddingLeft=Math.min(row.depth*20+3,43)+'px';
-    // 1.6 ③：顶部吸顶行点标签 = 原地收起该级（v16 测试覆盖）。
-    // 1.12：底部「后续同级」吸底行点标签 = 直接跳转到那个目录（用户要求），
-    //       滚动到该行作为可见区顶端，并选中它；收展用左侧 +/− 按钮。
-    const isBottom=side==='bottom';
-    const toggle=document.createElement('button');toggle.className='tree-toggle';toggle.textContent=this.expanded.has(node.id)?'−':'+';toggle.setAttribute('aria-label',t('收展 {0}',node.title));
+    const row=this.flattened[index],node=row.node!,element=document.createElement('div');
+    element.className='tree-row sticky-row'+(this.selection.includes(node.id)?' is-active':'');
+    element.dataset.id=node.id;element.dataset.kind=node.kind;element.dataset.side=side;
+    // 上下吸附行与普通行共用点击处理。
+    const open=this.expanded.has(node.id);
+    const toggle=document.createElement('button');toggle.className='tree-toggle';toggle.textContent=open?'−':'+';
+    toggle.setAttribute('aria-label',t('收展 {0}',node.title));toggle.setAttribute('aria-expanded',String(open));
     toggle.onclick=event=>{event.stopPropagation();void this.toggle(node);};
     const label=document.createElement('button');label.className='tree-label';label.title=node.title;
     const badge=document.createElement('span');badge.className='tree-type tree-type-'+node.kind;if(node.kind==='folder')setIcon(badge,'folder');else badge.textContent=node.kind==='cloze'?'L':'T';
     const text=document.createElement('span');text.className='tree-name';text.textContent=node.title;label.append(badge,text);
-    label.onclick=()=>{if(isBottom)this.jumpTo(index);else void this.toggle(node);};element.append(toggle,label);
+    element.append(toggle,label);
     if(node.kind==='folder'){const group=document.createElement('span');group.className='folder-counts';const counts=this.counts[node.id]||{new:0,learning:0,review:0};for(const key of ['new','learning','review'] as const){const count=document.createElement('span');count.className='count-'+key+(counts[key]===0?' is-zero':'');count.textContent=String(counts[key]);group.append(count);}element.append(group);}
+    this.bindDropTarget(element,node);
     element.oncontextmenu=event=>{event.preventDefault();this.actions.context(node,event);};return element;
-  }
-  /** 1.12：把某一行滚到可见区顶端（顶部吸顶栏占位要扣掉），并选中该目录。 */
-  private jumpTo(index:number){
-    const node=this.flattened[index]?.node;if(!node)return;
-    this.selected=node.id;
-    const stickyRows=this.topSticky.children.length||1;
-    this.host.scrollTop=Math.max(0,index*this.rowHeight-stickyRows*this.rowHeight);
-    this.actions.select(node);
-    this.render();
   }
 }

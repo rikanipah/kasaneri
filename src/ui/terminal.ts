@@ -1,5 +1,5 @@
 import { t } from '../core/i18n';
-// ===== 1.6 ⑧：卡片内嵌终端 =====
+// ===== 卡片内嵌终端 =====
 // 渲染层：xterm.js 视图（纯 JS，随 esbuild 打进 renderer.js；样式 xterm.css 由构建脚本复制）。
 // 主进程：node-pty 起真实 shell（见 main.ts 'reading:terminal:*'）。
 // 数据流：xterm 输入 → terminalInput(单向 send) → PTY；PTY 输出 → onTerminalData → xterm.write。

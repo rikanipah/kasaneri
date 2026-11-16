@@ -1,5 +1,5 @@
 import { t } from '../core/i18n';
-// ===== 1.6 ⑥：FSRS 一键优化 + 留存度实验性测算 =====
+// ===== FSRS 一键优化 + 留存度实验性测算 =====
 // 使用官方原生组件 @open-spaced-repetition/binding（napi-rs 绑定，支持 FSRS-6/7）。
 // 数据来源：统一 review_log（Anki 导入的历史也已按卡片写入这里），只读，不修改任何排程。
 // 为什么用 createRequire 延迟加载而不是静态 import：
@@ -107,7 +107,7 @@ export async function optimizeParameters(repository:Repository,input:{
     cardCount:cards.size,durationMs:Date.now()-begin};
 }
 
-// ===== 1.15：留存度快速统计（替代原先"训练+时间序列评测"的慢路径）=====
+// ===== 留存度快速统计（替代原先"训练+时间序列评测"的慢路径）=====
 // 口径对齐 Anki「记忆保留率」：只统计间隔 ≥ 1 天的复习（排除学习步骤内的短间隔），
 // 通过 = 评分 > 重来。按今天/昨天/上周/上个月/近一年/全部分组，并按难度拆欠熟练/已熟练。
 export interface RetentionRow{key:string;label:string;pass:number;total:number;rate:number|null;}
@@ -177,6 +177,6 @@ export function retentionReport(repository:Repository,input:{folderId?:string|nu
     durationMs:Date.now()-begin,
   };
 }
-// 1.125：原先这里有一个 optimizeDecks()「一次性把全部牌组训练完」的批量实现，
+// 原先这里有一个 optimizeDecks()「一次性把全部牌组训练完」的批量实现，
 // 但设置页的「一键全局优化」实际是在渲染层循环调用 optimizeDeckList + optimizeDeck（能显示逐牌组进度、
 // 可中途停止），批量版本从来没有调用方，已删除，避免两套语义漂移。

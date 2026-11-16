@@ -8,7 +8,7 @@
 
 > **Kasaneri is a personal experiment. I wrote much of it through vibe coding with models including ChatGPT and DeepSeek.**
 >
-> The application is shaped by my own workflow and is still being tested. There is a Windows installer, and the workflow takes some getting used to.
+> The application is shaped by my own workflow. I still need to test and refine it through long-term use. There is a Windows installer, and the workflow takes some getting used to.
 >
 > I am publishing it to document the experiment and share ideas and implementations that others can refer to.
 
@@ -28,16 +28,34 @@ Review and To-do have separate schedules. To-do brings back topics so you can re
    You need to understand the chemical meaning of $K^{\ominus}(T)$, $R$, and $\Delta_r H^{\ominus}$, as well as what a derivative means. Memorizing the formula without that background is less effective.
 3. I like the Markdown workflow in Obsidian. Electron also makes the workspace easy to customize.
 4. An Anki or Obsidian plug-in would inherit the host application’s limits, and several of these features need changes at a deeper level. Coding agents made a standalone experiment practical for me.
-5. I wanted to learn by building it.
+5. I had some time on my hands, thought it would be fun, and wanted to learn the process and the concepts involved by trying it myself.
 
-## Install on Windows
+## Installation
 
-1. Download **Kasaneri-Setup-1.0.0.exe** from [Releases](https://github.com/rikanipah/Kasaneri/releases).
-2. Open the installer and choose **简体中文** or **English**. Simplified Chinese is preselected. The per-user installation defaults to %LOCALAPPDATA%\Programs\Kasaneri and requires no administrator access.
+Download the Windows installer or the Linux x64 archive from [GitHub Releases](https://github.com/rikanipah/Kasaneri/releases/latest). The same page has the SHA-256 checksums.
+
+### Windows
+
+1. Download and open the `Kasaneri-Setup-<version>.exe` installer.
+2. Choose **简体中文** or **English** in the installer. Simplified Chinese is preselected. The per-user installation defaults to %LOCALAPPDATA%\Programs\Kasaneri and requires no administrator access.
 3. On first launch, choose an empty folder for a new library or select an existing Kasaneri library. A new library has five English tutorial cards in its default folder.
 4. To change the interface language, go to **Settings → General → Interface language** (设置 → 常规 → 界面语言). Choose a language and reopen Kasaneri.
 
+Already installed? Close Kasaneri, then run the new installer and keep your existing installation folder. Your library and settings are preserved.
+
 The installer is unsigned. Windows may show a SmartScreen prompt. To uninstall, open **Settings → Apps** in Windows and select Kasaneri. The MIT license is shown during setup.
+
+### Linux x64
+
+Download the Linux archive from Releases. For example, to extract and start v0.5.1:
+
+```bash
+tar -xzf Kasaneri-Linux-x64-0.5.1.tar.gz
+cd Kasaneri-Linux
+./run-linux.sh
+```
+
+On Arch Linux, once the package is listed on the AUR, install it with `yay -S kasaneri-bin`. Start it from the application menu or run `kasaneri`. Use `yay -Syu` for updates.
 
 ## Review
 
@@ -69,7 +87,7 @@ The **Memory Tree** shows parent cards, child cards, and related links. For exam
 
 - **Editing.** The workspace uses CodeMirror 6 for Markdown and KaTeX for math. Ctrl-click an anchor in the source text to open the associated card. Paste or drag in images and resize them per card. Image occlusion creates one test card per marked region.
 - **Library and backups.** A library is a folder with library.sqlite, assets, and cache. SQLite uses WAL mode. Attachments are deduplicated by SHA-256 and the image cache can be rebuilt. Automatic snapshots keep the latest 14 by default. Online snapshots are available while the app runs. Deleted cards go to Trash, and permanent deletion saves a Markdown copy first.
-- **Attachments.** The editor uses asset references for embedded files. Attachment Manager can move unreferenced files to its bin, restore them, or delete them permanently.
+- **Attachments.** The editor inserts attachments as document objects and stores copies in the library. Attachment Manager can move unreferenced files to its bin, restore them, or delete them permanently.
 - **Desktop sync.** Two devices connect directly over the LAN. The default HTTP port is 38641. Add the peer’s address in Settings. Requests are signed and timestamped. Review and reading logs merge schedules, while card content uses versions. Use the Card Browser to resolve conflicting versions.
 
 For source layout and builds, see [CODE.md](CODE.md). Kasaneri is distributed under the [MIT license](LICENSE).

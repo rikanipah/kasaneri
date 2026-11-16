@@ -8,7 +8,7 @@
 >
 > **本项目大部分代码是借助 ChatGPT、DeepSeek 等模型 vibe coding 写出来的，是实现本人一些想法的实验性尝试。**
 >
-> 应用面向的需求高度个性化，且目前仍在测试和优化，暂不考虑其他使用者的使用体验：虽然有安装包……但是引导和体验非常不友好……
+> 应用面向的需求高度个性化，且目前仍需要在本人长期使用中测试和优化，暂不考虑其他使用者的使用体验：虽然有安装包……但是引导和体验非常不友好……
 >
 > 发布此项目是为了提供一些想法和功能实现的参考，同时便于记录留存。
 
@@ -36,7 +36,7 @@ Kasaneri的编辑界面基于Electron，简洁美观。
 
 4. 为什么不写 Anki 或 Obsidian 的插件：写插件受软件本身限制，很多功能都要大改，底层也不同。现在 AI Agent 已经能写掉大部分体力活，除了钱包和时间两空外没什么大代价。
 
-5. 希望能从过程体验中学到东西。
+5. 闲的，有意思，想在尝试中学习相关流程和知识。
 
 ## 复习
 
@@ -99,13 +99,31 @@ leech 属性后面带累计重来次数，比如 leech(6)，一眼能看出循�
 
 ## 安装说明
 
-1. 在仓库的 [Releases](https://github.com/rikanipah/Kasaneri/releases) 里下载 `Kasaneri-Setup-1.0.0.exe`。
+在 [GitHub Releases](https://github.com/rikanipah/Kasaneri/releases/latest) 下载 Windows 安装包或 Linux x64 压缩包。同一页面提供 SHA-256 校验文件。
+
+### Windows
+
+1. 下载 `Kasaneri-Setup-<版本号>.exe` 安装包。
 2. 双击安装，按向导走完即可。按用户安装，默认装到 `%LOCALAPPDATA%\Programs\Kasaneri`，不需要管理员权限。
 3. 程序没有代码签名，Windows 可能弹「Windows 已保护你的电脑」，点「更多信息 → 仍要运行」。
 4. 第一次启动会让你选资料库文件夹：可以新建一个空文件夹，也可以打开已有的资料库，已有的设置会沿用。
 5. 资料库是一个普通文件夹（`library.sqlite`、`assets`、`cache`），放在哪都行；升级程序和卸载都不会动它，删除需要自行删除。
 6. 卸载：设置 → 应用 → Kasaneri → 卸载，或者用开始菜单里的卸载项。
 7. 安装向导里显示的许可是 MIT。
+
+已安装 Kasaneri 的用户，先退出应用，然后运行新安装包并沿用原安装目录。覆盖安装会保留资料库和设置。
+
+### Linux x64
+
+从 Releases 下载 Linux 压缩包。以 v0.5.1 为例，解压后这样启动：
+
+```bash
+tar -xzf Kasaneri-Linux-x64-0.5.1.tar.gz
+cd Kasaneri-Linux
+./run-linux.sh
+```
+
+上架 AUR 后，Arch Linux 可用 `yay -S kasaneri-bin` 安装。从应用菜单打开 Kasaneri，或在终端运行 `kasaneri`。以后用 `yay -Syu` 更新。
 
 ## 其它
 
@@ -115,11 +133,11 @@ leech 属性后面带累计重来次数，比如 leech(6)，一眼能看出循�
 
 ### 数据与备份
 
-数据是一个 SQLite 库（WAL，schema 12），不是 Anki 的库格式，与 Anki 数据的对接待完善。资料库就是一个文件夹：library.sqlite、assets（附件按内容 sha256 去重）、cache（可重建的图片预览）。自动快照默认留最近 14 份，也能不退出程序直接做在线快照。删除都是软删除，进垃圾桶trash，彻底删除前写一份 Markdown 快照。
+数据是一个 SQLite 库（WAL，schema 14），不是 Anki 的库格式，与 Anki 数据的对接待完善。资料库就是一个文件夹：library.sqlite、assets（附件按内容 sha256 去重）、cache（可重建的图片预览）。自动快照默认留最近 14 份，也能不退出程序直接做在线快照。删除都是软删除，进垃圾桶trash，彻底删除前写一份 Markdown 快照。
 
 ### 附件
 
-附件在正文里用 [[asset:...]] 引用，设置→文件里有附件管理，能把没被引用的附件移进附件回收站，也能恢复或彻底删除。
+附件作为对象插入正文，文件副本保存在资料库中，设置→文件里有附件管理，能把没被引用的附件移进附件回收站，也能恢复或彻底删除。
 
 ### 同步
 

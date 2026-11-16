@@ -67,7 +67,7 @@ export function createSyncHttpServer({
         }
         return;
       }
-      // 1.30：时钟保护——ping 带上服务器时间，对端据此判断时钟偏差；
+      // 时钟保护——ping 带上服务器时间，对端据此判断时钟偏差；
       // push 时拒绝"来自未来"的 op（会打乱 (reviewedAt, id) 全序，导致重放错序）。
       if(req.url==='/sync/health'){
         // 同步协议的标识沿用发布版的值，让旧客户端也能识别。

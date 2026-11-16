@@ -86,11 +86,11 @@ function previousOperationAt(op:SyncOp):number|null{
 
 export function applySyncOps(repository:Repository,ops:SyncOp[],options:{clockToleranceMs?:number}={}):SyncApplyResult{
   if(!Array.isArray(ops)||ops.length>5000)throw Error(t('同步数据无效。'));
-  // 1.30：时钟保护（双保险）——明显来自未来的 op 不重放，避免打乱顺序。
+  // 时钟保护（双保险）——明显来自未来的 op 不重放，避免打乱顺序。
   // 容忍度可配置：默认 2 分钟；测试或时间旅行场景可放宽。
   const clockLimit=Date.now()+Math.max(0,Number(options.clockToleranceMs??2*60*1000));
   let applied=0,skipped=0,deferred=0;
-  // 1.114：记录「收到的操作比本地旧、被丢弃」的情况（= 冲突），供界面保留查看
+  // 记录「收到的操作比本地旧、被丢弃」的情况（= 冲突），供界面保留查看
   const conflicts:SyncConflict[]=[];
   const recordConflict=(op:SyncOp,localAt:number,localState:unknown,reason:SyncConflict['reason'])=>{
     const table=op.kind==='fsrs'?'review_log':'reading_log';

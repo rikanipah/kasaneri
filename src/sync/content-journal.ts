@@ -1,13 +1,14 @@
 import { t } from '../core/i18n';
 import type { Anchor, NodeKind } from '../core/model';
 import type { Repository } from '../data/database';
+import { projectStoredDocuments,type StoredDocuments } from '../data/document-storage';
 import { localContentAsset } from './content-assets';
 import { chooseContentVersion, CONTENT_BATCH_SIZE, inspectContentVersions, isVersionId, makeContentVersion,
   mergeContentVersions, validateContentVersion, type CardContent, type ContentVersion } from './content-versions';
 
 type StoredVersion={version_id:string;node_id:string;parents:string;value:string;created_at:number};
-type ContentRow={
-  kind:NodeKind;parent_id:string|null;source_id:string|null;title:string;content:string;answer:string;
+type ContentRow=StoredDocuments&{
+  kind:NodeKind;parent_id:string|null;source_id:string|null;title:string;
   anchor:string|null;position:number;priority:number|null;deleted_at:string|null;
 };
 type ApplyContentResult=
@@ -22,7 +23,7 @@ function fromRow(row:StoredVersion):ContentVersion{
     createdAt:Number(row.created_at)||undefined};
 }
 
-const watchedColumns=['kind','parent_id','source_id','title','content','answer','anchor','position','priority','deleted_at'];
+const watchedColumns=['kind','parent_id','source_id','title','content','answer','content_objects','answer_objects','anchor','position','priority','deleted_at'];
 function versionIdBatch(ids:readonly string[]):string{
   if(!Array.isArray(ids)||ids.length>CONTENT_BATCH_SIZE||!ids.every(isVersionId)){
     throw Error(t('卡片版本编号批次无效。'));
@@ -30,7 +31,7 @@ function versionIdBatch(ids:readonly string[]):string{
   return JSON.stringify([...new Set(ids)]);
 }
 
-// 1.191：同步表已搬进 schema 12 迁移（src/data/migrations/migrate-content-sync.ts），这里只做读写。
+// 同步表已搬进 schema 12 迁移（src/data/migrations/migrate-content-sync.ts），这里只做读写。
 export class ContentJournal {
   constructor(private repository:Repository){}
 
@@ -73,7 +74,7 @@ export class ContentJournal {
     const db=this.repository;
     const row=db.query('SELECT '+watchedColumns.join(',')+' FROM nodes WHERE id=?').get(nodeId) as ContentRow|undefined;
     const value:CardContent|null=row&&!row.deleted_at?{
-      kind:row.kind,parentId:row.parent_id,sourceId:row.source_id,title:row.title,content:row.content,answer:row.answer,
+      kind:row.kind,parentId:row.parent_id,sourceId:row.source_id,title:row.title,...projectStoredDocuments(row),
       anchor:row.anchor?JSON.parse(row.anchor) as Anchor:null,position:row.position,priority:row.priority,
     }:null;
     const before=this.localVersion(nodeId);
@@ -161,7 +162,7 @@ export class ContentJournal {
     });
   }
 
-  /** 1.193：冲突处理时「删除卡片」——生成一个删除版本，父版本取当前所有分叉头。
+  /** 冲突处理时「删除卡片」——生成一个删除版本，父版本取当前所有分叉头。
    *  这样两边都会收敛到删除，冲突记录也能清掉；卡片本身按正常删除进垃圾桶（可恢复）。 */
   discard(nodeId:string):ApplyContentResult{
     return this.repository.transaction(()=>{
