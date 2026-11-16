@@ -6,11 +6,13 @@
 
 [Code and build instructions](CODE.md)
 
-> **Kasaneri is a personal experiment. I wrote much of it through vibe coding with models including ChatGPT and DeepSeek.**
+## Note
+
+> **Most of the code in this project was written through vibe coding with AI models such as ChatGPT and DeepSeek. This is an experimental project to bring some of my ideas to life.**
 >
-> The application is shaped by my own workflow. I still need to test and refine it through long-term use. There is a Windows installer, and the workflow takes some getting used to.
+> The application is designed around my **highly personal needs** and still requires long-term testing and improvements through my own use. Although an installer is available, it is provided only as a reference for how these ideas might be implemented. **The needs and user experience of others have not been considered!**
 >
-> I am publishing it to document the experiment and share ideas and implementations that others can refer to.
+> This project is published **solely** to share some ideas and examples of how certain features can be implemented, and to keep a record of my work. The application hasn't been tested extensively in real-world use yet, so **STILL LOTS OF BUGS!!**
 
 ## What is Kasaneri?
 
