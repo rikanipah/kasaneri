@@ -5,7 +5,7 @@ import {Repository} from './database';
 const enabled=`CASE WHEN n.kind='cloze' THEN COALESCE(r.enabled,1) ELSE COALESCE(s.enabled,1) END`;
 const stage=`CASE WHEN n.kind='cloze' THEN COALESCE(r.stage,0) WHEN COALESCE(s.reps,0)=0 THEN 0 ELSE 2 END`;
 const due=`CASE WHEN n.kind='cloze' THEN r.due_at ELSE s.due_at END`;
-// 1.6：状态表达式单独提出来，浏览列表的"状态"列取值和表头按状态排序共用同一段 SQL，避免两处漂移。
+// 状态表达式单独提出来，浏览列表的"状态"列取值和表头按状态排序共用同一段 SQL，避免两处漂移。
 // 状态判定顺序不能乱：
 //   1. 内容未补全 → empty
 //   2. 推送开启（检测卡要求复习关闭才算"推送中"）→ push
@@ -38,7 +38,7 @@ export class CardCatalog {
     const query=String(input.query||'').trim();if(query.length>200)throw Error(t('搜索内容请控制在 200 字以内。'));
     const sort=input.sort||'created',direction=input.direction||'desc';
     const statusValues:CatalogStatus[]=['new','learning','review','hold','buried','due','suspended','empty','push','leech','conflict'];
-    // 1.191：浏览卡片改成多选筛选——同一组内 OR，组与组之间 AND；空集合 = 不筛选。
+    // 浏览卡片改成多选筛选——同一组内 OR，组与组之间 AND；空集合 = 不筛选。
     // 旧的单选 kind/status 继续兼容（其他调用方/测试还在用）。
     const kinds=[...new Set<NodeKind>([
       ...(Array.isArray(input.kinds)?input.kinds:[]),
@@ -51,7 +51,7 @@ export class CardCatalog {
     if(kinds.some(kind=>!['topic','material','cloze'].includes(kind))||
         statuses.some(status=>!statusValues.includes(status)))throw Error(t('筛选条件无效。'));
     if(!['created','updated','title','due','kind','folder','state','reps'].includes(sort)||!['asc','desc'].includes(direction))throw Error(t('排序方式无效。'));
-    // 1.135：浏览卡片不再翻页（和 Anki 一样一次给全部命中），所以上限放开到 1 万；
+    // 浏览卡片不再翻页（和 Anki 一样一次给全部命中），所以上限放开到 1 万；
     // 真超过 1 万时界面会提示用搜索/筛选缩小范围。
     const limit=Math.max(1,Math.min(10000,Math.floor(Number(input.limit)||100))),offset=Math.max(0,Math.floor(Number(input.offset)||0));
     if(!Number.isSafeInteger(offset))throw Error(t('页码无效。'));
@@ -90,14 +90,14 @@ export class CardCatalog {
         conditions.push('n.rowid IN(SELECT rowid FROM nodes_substrings WHERE nodes_substrings MATCH ?)');
         args.push([...grams].map(gram=>'"'+gram.replaceAll('"','""')+'"').join(' AND '));
       }
-      // 1.169：卡片属性（标签）也参与检索
+      // 卡片属性（标签）也参与检索
       conditions.push("(n.title LIKE ? ESCAPE '\\' OR n.content LIKE ? ESCAPE '\\' OR n.answer LIKE ? ESCAPE '\\' OR n.id LIKE ? ESCAPE '\\' OR EXISTS(SELECT 1 FROM node_tags t WHERE t.node_id=n.id AND t.tag LIKE ? ESCAPE '\\'))");
       const value='%'+term.replace(/[\\%_]/g,'\\$&')+'%';args.push(value,value,value,value,value);
     }
     const where='WHERE '+conditions.join(' AND '),db=this.repository;
-    // 1.209：countTotal=false 时不重算总数（续页滚到底用），省掉一次整表扫描；total 返回 -1 表示「没算」。
+    // countTotal=false 时不重算总数（续页滚到底用），省掉一次整表扫描；total 返回 -1 表示「没算」。
     const total=input.countTotal===false?-1:Number(db.query(`SELECT count(*) n ${from} ${where}`).get(...args)!.n);
-    // 1.6：排序键扩展。kind/folder/state/reps 都是纯表达式排序，不需要建索引，100 张分页足够快；
+    // 排序键扩展。kind/folder/state/reps 都是纯表达式排序，不需要建索引，100 张分页足够快；
     // 表头点击排序由 renderer/browser.ts 发起，键名必须与这里的白名单一致。
     const order={created:'n.position',updated:'n.updated_at',title:'n.title COLLATE NOCASE',due:`(${due})`,
       kind:`CASE n.kind WHEN 'topic' THEN 0 WHEN 'material' THEN 1 ELSE 2 END`,folder:'f.title COLLATE NOCASE',

@@ -18,7 +18,7 @@ const pendingReason=(reason?:string)=>
   :reason==='editing'?t('卡片正在编辑，请先保存并关闭编辑窗口。')
   :t('暂时还不能删除：{0}',reason||t('未知原因'));
 
-/** 1.193：冲突处理队列——处理完一张自动跳到下一张，不用关窗口再点开。
+/** 冲突处理队列——处理完一张自动跳到下一张，不用关窗口再点开。
  *  底部和右键菜单都有「删除卡片」（写删除版本，卡片进垃圾桶）。 */
 export function showSyncConflicts(groups:ConflictGroup[],startIndex:number,handlers:ConflictHandlers):void{
   const queue=groups.slice();

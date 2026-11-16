@@ -13,13 +13,13 @@ export class StatisticsDialog {
   this.dialog.id='statistics';
   this.content.className='statistics-body';
   this.footer.className='dialog-actions';
-  // 1.36：底部固定「关闭」（Anki 统计窗口的布局），不用再跑到右上角找 ×
+  // 底部固定「关闭」（Anki 统计窗口的布局），不用再跑到右上角找 ×
   const close=el('button',t('关闭'));close.onclick=()=>{this.sequence++;this.dialog.close();};
   this.footer.append(close);
   this.dialog.append(this.content,this.footer);document.body.append(this.dialog);
  }
  private begin(title:string){this.content.replaceChildren();const header=el('div','','statistics-heading'),heading=el('h3',title);header.append(heading);this.content.append(header);if(!this.dialog.open)this.dialog.showModal();}
- /** 1.206：统计大类——顶部左侧切复习统计/待办统计。 */
+ /** 统计大类——顶部左侧切复习统计/待办统计。 */
  private tabs(folderId:string|undefined,days:number,active:'review'|'reading'){
   const bar=el('div','','statistics-tabs');
   for(const [key,label] of [['review',t('复习统计')],['reading',t('待办统计')]] as const){
@@ -31,7 +31,7 @@ export class StatisticsDialog {
  }
  private metric(host:HTMLElement,label:string,value:any){const item=el('div','','statistics-metric');item.append(el('small',label),el('strong',String(value??'—')));host.append(item);}
  /**
-  * 1.33：重写图表，参考 Anki 统计的读图方式：
+  * 重写图表，参考 Anki 统计的读图方式：
   *  · 左侧留足刻度区（不再让柱子和数字互相遮挡）；
   *  · y 轴用"整数友好"刻度（1/2/5×10^n），最多 5 格；
   *  · 每根柱子有更深的描边与悬停高亮，颜色按系列区分；
@@ -87,7 +87,7 @@ export class StatisticsDialog {
   }
   section.append(svg);void xMax;return section;
  }
- /** 1.35：仿 Anki「预测」图——绿色柱（当日到期）+ 灰色累计面积 + 右轴累计刻度，悬停显示"N 天内 / 累计"。 */
+ /** 仿 Anki「预测」图——绿色柱（当日到期）+ 灰色累计面积 + 右轴累计刻度，悬停显示"N 天内 / 累计"。 */
  private cumulativeChart(title:string,points:Array<{x:number;y:number;label:string}>){
   const section=el('section','','statistics-chart');section.append(el('h4',title));
   if(!points.length){section.append(el('p',t('暂无数据'),'preference-hint'));return section;}
@@ -106,9 +106,9 @@ export class StatisticsDialog {
     const cum=maxCum*i/4;shape('text',{x:right+8,y:yCum(cum)+4,fill:'#8f8f8f','font-size':11},String(Math.round(cum)));
   }
   // 累计面积（灰）+ 累计折线
-  // 1.37：趋势线改用灰蓝（与绿色柱子区分），面积同色更淡；刻度取整避免 1042.5 这类读数。
+  // 趋势线改用灰蓝（与绿色柱子区分），面积同色更淡；刻度取整避免 1042.5 这类读数。
   const area='M'+x(0)+','+bottom+' '+points.map((_,index)=>'L'+x(index)+','+yCum(cumulative[index]!)).join(' ')+' L'+x(points.length-1)+','+bottom+' Z';
-  // 1.39：阴影和折线都再提亮一档（用户反馈偏深），同时保留 Anki 的灰黑观感
+  // 阴影和折线都再提亮一档，同时保留 Anki 的灰黑观感
   shape('path',{d:area,fill:'#e6e6e6','fill-opacity':0.07,stroke:'none'});
   shape('path',{d:points.map((_,index)=>(index?'L':'M')+x(index)+','+yCum(cumulative[index]!)).join(' '),stroke:'#f5f5f5','stroke-width':1.2,'stroke-opacity':0.95,fill:'none','stroke-linejoin':'round'});
   // 当日到期柱（Anki 绿）
@@ -118,7 +118,7 @@ export class StatisticsDialog {
     const bar=shape('rect',{x:x(index)-barWidth/2,y:yBar(point.y),width:barWidth,height:Math.max(0,bottom-yBar(point.y)),rx:1.5,fill:'#7bc47f','fill-opacity':0.62});
     barElements.push(bar as SVGRectElement);
   });
-  // 1.38：悬停位置的淡灰竖条（明确指出当前读的是哪一天，Anki 也是这么标的）
+  // 悬停位置的淡灰竖条（明确指出当前读的是哪一天，Anki 也是这么标的）
   const marker=shape('rect',{x:left,y:top,width:band,height:bottom-top,fill:'#ffffff','fill-opacity':0.13,stroke:'none'}) as SVGRectElement;
   marker.setAttribute('visibility','hidden');
   const overlay=shape('rect',{x:left,y:top,width:right-left,height:bottom-top,fill:'transparent'});
@@ -144,7 +144,7 @@ export class StatisticsDialog {
   shape('text',{x:left,y:238,fill:'var(--text-muted)','font-size':11},t('今天'));
   shape('text',{x:right,y:238,'text-anchor':'end',fill:'var(--text-muted)','font-size':11},points.at(-1)!.label);
   section.append(svg);
-  // 1.37：图例说明——绿柱=当天到期，灰蓝折线+阴影=累计到期（右轴）
+  // 图例说明——绿柱=当天到期，灰蓝折线+阴影=累计到期（右轴）
   section.append(el('p',t('说明：绿色柱＝当天到期需要复习的张数（左轴）；灰色折线与其阴影＝从今天起逐日累计的到期总量（右轴）；勾选「积压」时今天的柱子包含已逾期未复习的卡片。'),'preference-hint'));
   return section;
  }
@@ -161,7 +161,7 @@ export class StatisticsDialog {
   }));
   const metrics=el('div','','statistics-metrics'),state=data.state;
   const seconds=(value:any)=>value===null||value===undefined?'—':(Number(value)>=3600?t('{0} 小时',number(Number(value)/3600)):t('{0} 分',number(Number(value)/60)));
-  // 1.14：字段对齐 Anki 卡片信息（复习次数/首次复习/最近复习/间隔/总用时/平均用时/难度…）
+  // 字段对齐 Anki 卡片信息（复习次数/首次复习/最近复习/间隔/总用时/平均用时/难度…）
   for(const [label,value] of [
     [t('卡片编号'),data.id],[t('当前状态'),data.reviewEnabled?t('FSRS 复习'):data.pushEnabled?t('待办中'):t('已搁置')],
     [t('FSRS 模型'),data.settings.fsrsVersion],[t('已学次数'),state?.reps??0],[t('复习次数'),data.reviewCount??0],
@@ -176,7 +176,7 @@ export class StatisticsDialog {
     [t('创建时间'),date(data.createdAt)],[t('修改时间'),date(data.updatedAt)],
     [t('标签'),data.tags.map((tag:string)=>tag==='leech'&&data.leechCount?tag+'('+data.leechCount+')':tagLabel(tag)).join('，')||t('无')]])this.metric(metrics,label as string,value);
   this.content.append(metrics);
-  // ===== 1.107：对齐 Anki「卡片信息」——上方复习记录表，下方遗忘曲线 =====
+  // ===== 对齐 Anki「卡片信息」——上方复习记录表，下方遗忘曲线 =====
   const typeLabel=(type:any)=>type===0?t('新卡'):type===1?t('学习'):type===2?t('复习'):type===3?t('重新学习'):'—';
   const typeClass=(type:any)=>type===3?'is-relearn':type===1?'is-learn':type===2?'is-review':'is-new';
   const difficultyPercent=(value:any)=>value===null||value===undefined?'—':number((Number(value)-1)/9*100)+'%';
@@ -194,7 +194,7 @@ export class StatisticsDialog {
     const tr=document.createElement('tr');
     tr.append(el('td',date(row.at)));
     const typeCell=el('td',''),badge=document.createElement('span');
-    // 1.210：排程事件（待办暂停 / 返回复习 / 搁置 / 留存判定）没有评分，类型列直接写事件名
+    // 排程事件（待办暂停 / 返回复习 / 搁置 / 留存判定）没有评分，类型列直接写事件名
     if(row.kind==='event'){badge.className='card-type is-event';badge.textContent=row.label||t('排程变更');}
     else{badge.className='card-type '+typeClass(row.type);badge.textContent=typeLabel(row.type);}
     typeCell.append(badge);tr.append(typeCell);
@@ -289,12 +289,12 @@ export class StatisticsDialog {
   const sequence=++this.sequence,data=await this.request('statistics',{folderId,days});if(sequence!==this.sequence)return;this.begin(t('统计 · {0}',data.title));this.tabs(folderId,days,'review');
   const metrics=el('div','','statistics-metrics');for(const [key,label] of [['total',t('卡片总数')],['tests',t('检测卡')],['newCards',t('FSRS 新卡')],['learned',t('已学复习卡')],['pushing',t('待办中')],['suspended',t('暂停复习')],['leeches',t('难记卡片')]])this.metric(metrics,label,data.summary[key]);
   const answers=data.ratings.reduce((sum:number,row:any)=>sum+row.count,0),forgot=data.ratings.find((row:any)=>row.rating===1)?.count||0;this.metric(metrics,t('期间回答次数'),answers);this.metric(metrics,t('期间答对率'),answers?number((answers-forgot)/answers*100)+'%':'—');
-  // 1.31：对齐 Anki 的"学习天数 / 平均每日"口径
+  // 对齐 Anki 的"学习天数 / 平均每日"口径
   this.metric(metrics,t('学习天数'),(data.studiedDays??0)+' / '+days);
   this.metric(metrics,t('平均（含未学习天）'),t('{0} 次/天',number(answers/days)));
   this.metric(metrics,t('平均（只计学习天）'),data.studiedDays?t('{0} 次/天',number(answers/data.studiedDays)):'—');
   this.content.append(metrics);
-  // ===== 1.35：每张图各自的日期区间（Anki 的预测图也是每图独立选 1 个月/3 个月/1 年/全部）=====
+  // ===== 每张图各自的日期区间（Anki 的预测图也是每图独立选 1 个月/3 个月/1 年/全部）=====
   const dayKey=(offset:number)=>{const time=new Date(Date.now()+offset*86400000);
     return [time.getFullYear(),String(time.getMonth()+1).padStart(2,'0'),String(time.getDate()).padStart(2,'0')].join('-');};
   const RANGES=[{label:t('1 个月'),span:30},{label:t('3 个月'),span:90},{label:t('1 年'),span:365},{label:t('全部'),span:3650}];
@@ -357,7 +357,7 @@ export class StatisticsDialog {
   }
   this.content.append(rangeChart(t('每日回答次数'),answersValue,'#b496ef',t('本区间回答')));
   this.content.append(rangeChart(t('每日新增卡片'),addedValue,'#7fb2ff',t('本区间新增')));
-  // 1.33：不同图表用不同颜色（颜色取自当前主题的可用色板，避免全部一个紫色）
+  // 不同图表用不同颜色（颜色取自当前主题的可用色板，避免全部一个紫色）
   const palette=['#b496ef','#7fb2ff','#6fd3c7','#e0a86e','#ef8fb6','#9ad36f'];
   let colorIndex=0;
   const bars=(title:string,rows:Array<{label:string;count:number}>)=>this.content.append(this.chart(title,rows.map((row,index)=>({x:index,y:Number(row.count),label:row.label})),'bars',undefined,undefined,palette[colorIndex++%palette.length]));
@@ -371,7 +371,7 @@ export class StatisticsDialog {
   this.content.append(el('p',t('分布类图表按当前卡片状态统计（不是历史快照）；Anki 的日历热力图/日程表依赖它的牌组日历概念，这里不做。'),'preference-hint'));
  }
 
- /** 1.206：轻量待办统计——只做日常能看懂的量，不做时间/热力图。 */
+ /** 轻量待办统计——只做日常能看懂的量，不做时间/热力图。 */
  async openReading(folderId?:string,days=30){
   const sequence=++this.sequence,data=await this.request('readingStatistics',{folderId,days});if(sequence!==this.sequence)return;
   this.begin(t('统计 · {0}',data.title));this.tabs(folderId,days,'reading');

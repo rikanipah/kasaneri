@@ -109,7 +109,7 @@ export class CardDependencies {
     return blocked;
   }
 
-  // 1.198：先修卡要连续 N 次（N=masteryReps）有效评分都达到「良好/简单」才算掌握。
+  // 先修卡要连续 N 次（N=masteryReps）有效评分都达到「良好/简单」才算掌握。
   private mastered(id:string):boolean{
     const need=Math.max(1,Math.min(9,Math.round(this.masteryReps(id))));
     const latest=this.effective(id);

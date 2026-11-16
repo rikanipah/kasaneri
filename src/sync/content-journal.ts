@@ -30,7 +30,7 @@ function versionIdBatch(ids:readonly string[]):string{
   return JSON.stringify([...new Set(ids)]);
 }
 
-// 1.191：同步表已搬进 schema 12 迁移（src/data/migrations/migrate-content-sync.ts），这里只做读写。
+// 同步表已搬进 schema 12 迁移（src/data/migrations/migrate-content-sync.ts），这里只做读写。
 export class ContentJournal {
   constructor(private repository:Repository){}
 
@@ -161,7 +161,7 @@ export class ContentJournal {
     });
   }
 
-  /** 1.193：冲突处理时「删除卡片」——生成一个删除版本，父版本取当前所有分叉头。
+  /** 冲突处理时「删除卡片」——生成一个删除版本，父版本取当前所有分叉头。
    *  这样两边都会收敛到删除，冲突记录也能清掉；卡片本身按正常删除进垃圾桶（可恢复）。 */
   discard(nodeId:string):ApplyContentResult{
     return this.repository.transaction(()=>{

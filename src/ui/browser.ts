@@ -9,31 +9,31 @@ interface BrowserActions {
   beforeOpen:()=>Promise<void>;
   beforeQuery:()=>Promise<void>;
   select:(id:string|null)=>Promise<void>;
-  /** 1.26：双击一行 → 在新窗口里编辑这张卡 */
+  /** 双击一行 → 在新窗口里编辑这张卡 */
   openWindow:(id:string)=>void;
   setEnabled:(ids:string[],enabled:boolean)=>Promise<void>;
   move:(ids:string[])=>Promise<void>;
-  /** 1.194：Ctrl 多选后批量删除（有冲突的卡片走冲突处理里的删除版本）。 */
+  /** Ctrl 多选后批量删除（有冲突的卡片走冲突处理里的删除版本）。 */
   remove:(ids:string[])=>Promise<void>;
   saveEdit:(input:SaveInput)=>Promise<{revision:number}>;
-  /** 1.191：浏览表格里右键一行。传整行信息，垃圾桶里的卡片（冲突筛选能看到）也要有菜单。 */
+  /** 浏览表格里右键一行。传整行信息，垃圾桶里的卡片（冲突筛选能看到）也要有菜单。 */
   context:(row:{id:string;kind:NodeKind;deletedAt:string|null},event:MouseEvent)=>void;
   info:(id:string)=>void;
   contentChanged:(id:string)=>Promise<void>;
   closed:()=>Promise<void>;
   visibility:(visible:boolean)=>void;
-  /** 1.133：右上角按钮文案。独立浏览窗口里「回到编辑」没有意义，改成关窗。 */
+  /** 右上角按钮文案。独立浏览窗口里「回到编辑」没有意义，改成关窗。 */
   closeLabel?:string;
 }
-// 1.7 ④：SM 术语。topic=主题，material=提取（extract），cloze=检测卡；
+// SM 术语。topic=主题，material=提取（extract），cloze=检测卡；
 // 推送=待办队列（outstanding queue），停止推送=搁置（dismiss）。
 const states={new:t('新卡'),learning:t('学习中'),review:t('复习'),hold:t('留存判定'),buried:t('已搁置'),suspended:t('待办暂停'),empty:t('未完成'),push:t('待办中'),leech:t('难记')};
 const kinds={folder:t('文件夹'),topic:t('主题'),material:t('提取'),cloze:t('检测卡')};
 // 1.6 ①②：表头列定义。sort 键必须与 storage/catalog.ts 的排序白名单一致；
 // key 同时用作列宽持久化与列顺序的键。
-// 1.133：列可配置——右键表头勾选显示哪些列，拖动表头换顺序；顺序/隐藏状态存 settings['browserColumns']。
+// 列可配置——右键表头勾选显示哪些列，拖动表头换顺序；顺序/隐藏状态存 settings['browserColumns']。
 type ColumnKey='title'|'kind'|'folder'|'state'|'due'|'reps'|'createdAt'|'updatedAt';
-// 1.146：照 Anki 的 `_set_column_sizes()`——每一列都是固定像素宽（可拖），**只有最后一列 Stretch**。
+// 照 Anki 的 `_set_column_sizes()`——每一列都是固定像素宽（可拖），**只有最后一列 Stretch**。
 // 所以编辑区左移时前面的列宽度完全不变，只有最后一列在缩；缩到最小后表格溢出、被编辑区盖住。
 const columnDefs:ReadonlyArray<{key:ColumnKey;label:string;sort?:CatalogQuery['sort'];asc?:boolean;width:number}>=[
   {key:'title',label:t('标题'),sort:'title',asc:true,width:260},
@@ -46,9 +46,9 @@ const columnDefs:ReadonlyArray<{key:ColumnKey;label:string;sort?:CatalogQuery['s
   {key:'updatedAt',label:t('修改日期'),sort:'updated',width:102},
 ];
 const columnByKey=new Map(columnDefs.map(column=>[column.key,column]));
-// 1.191：多选筛选的开关——再点一次就取消。
+// 多选筛选的开关——再点一次就取消。
 function toggleSet<T>(set:Set<T>,value:T){if(set.has(value))set.delete(value);else set.add(value);}
-// 1.144：虚拟滚动的总高度上限。超过就按比例压缩，保证滚动条滑块不会短到按不住。
+// 虚拟滚动的总高度上限。超过就按比例压缩，保证滚动条滑块不会短到按不住。
 export class CardBrowser {
   visible=false;
   private items:CatalogRow[]=[];
@@ -59,22 +59,22 @@ export class CardBrowser {
   private timer:ReturnType<typeof setTimeout>|undefined;
   private autosaveTimer:ReturnType<typeof setTimeout>|undefined;
   private titleTimer:ReturnType<typeof setTimeout>|undefined;
-  // 1.136：表格按可视区虚拟滚动（只渲染屏幕内的行），上万张也不卡
+  // 表格按可视区虚拟滚动（只渲染屏幕内的行），上万张也不卡
   private rowHeight=30;
   private syncScrollbar:()=>void=()=>{};
   private order:CatalogQuery['sort']='created';
   private direction:CatalogQuery['direction']='desc';
   private sequence=0;
-  // 1.209：搜索不再一次把一万行全搬回来——先取一屏多一点，滚到底再续。
+  // 搜索不再一次把一万行全搬回来——先取一屏多一点，滚到底再续。
   private static readonly loadChunk=400;
   private loadingMore=false;
   private ratio=42;
-  // 1.103：右侧编辑区当前编辑的卡片
+  // 右侧编辑区当前编辑的卡片
   private editorId:string|null=null;
   private editorRevision=0;
   private editorSaved={content:'',answer:''};
   private folderId:string|null=null;
-  // 1.191：卡片类型 / 学习状态改成多选——空集合 = 不筛选；点一下选中，再点一下取消。
+  // 卡片类型 / 学习状态改成多选——空集合 = 不筛选；点一下选中，再点一下取消。
   private kinds=new Set<NodeKind>();
   private statuses=new Set<CatalogStatus>();
   private folders:FolderInfo[]=[];
@@ -82,9 +82,9 @@ export class CardBrowser {
   private groupOpen:Record<string,boolean>={folder:true,kind:false,status:false};
   private activeFolder:string|null=null;
   private conflicts=new Map<string,SyncConflictItem[]>();
-  // 1.142：侧边栏牌组后面显示今日到期数（仿 Anki 的牌组计数）
+  // 侧边栏牌组后面显示今日到期数（仿 Anki 的牌组计数）
   private folderCounts:Record<string,{new:number;learning:number;review:number}>={};
-  // 1.133：列的显示/顺序（存在 settings['browserColumns']）
+  // 列的显示/顺序（存在 settings['browserColumns']）
   private columnOrder:ColumnKey[]=columnDefs.map(column=>column.key);
   private columnWeights:Partial<Record<ColumnKey,number>>={};
   private hiddenColumns=new Set<ColumnKey>();
@@ -116,9 +116,9 @@ export class CardBrowser {
       </aside></div>
       <div class="browser-footer"><button data-i18n id="browser-refresh">刷新</button><button data-i18n id="browser-enabled" disabled>暂停</button><button data-i18n id="browser-resume" hidden>加入 / 恢复</button><button data-i18n id="browser-move" disabled>移至…</button><button data-i18n id="browser-delete" class="danger" disabled>删除</button><button data-i18n id="browser-info" disabled>卡片信息</button><span class="browser-hint" id="browser-selection" aria-live="polite"></span></div>`;
     localizeMarkup(host);
-    // 1.95：打开浏览页时把焦点给搜索框，直接就能打字搜索
+    // 打开浏览页时把焦点给搜索框，直接就能打字搜索
     queueMicrotask(()=>{(this.element('browser-query') as HTMLInputElement).focus();});
-    // 1.209：搜索改成回车才查——边打边查会在拼音还拼着的时候就搜一轮，结果乱跳。
+    // 搜索改成回车才查——边打边查会在拼音还拼着的时候就搜一轮，结果乱跳。
     // 现在输入只清旧结果标记，按回车（或点刷新）才真正查询；清空（含输入框自带的 ×）立即查一次。
     const query=(this.element('browser-query') as HTMLInputElement);
     query.addEventListener('input',event=>{
@@ -135,10 +135,10 @@ export class CardBrowser {
       clearTimeout(this.timer);this.sequence++;
       void this.refresh();
     });
-    // —— 1.6 ①：表头点击排序；1.6 ②：右缘拖拽调列宽；1.133：表头可拖动换顺序、右键勾选显示哪些列。
+    // —— 表头点击排序；右缘拖拽调列宽；表头可拖动换顺序、右键勾选显示哪些列。
     this.renderHead();
     this.bindRowEvents();
-    // 1.152：自绘滚动条——原生滑块在几千行时会被压成几像素，抓不住；
+    // 自绘滚动条——原生滑块在几千行时会被压成几像素，抓不住；
     // 这里固定滑块最小 64px，拖动用 pointer 自己算 scrollTop，原生滚动条隐藏。
     const tableScroll=this.element('browser-table-scroll');
     const bar=this.element('browser-scrollbar'),thumb=this.element('browser-scrollbar-thumb');
@@ -153,14 +153,14 @@ export class CardBrowser {
       const top=Math.round((tableScroll.scrollTop/maxScroll)*(track-size));
       thumb.style.height=size+'px';thumb.style.transform=`translateY(${top}px)`;
     };
-    // 1.167：滚动时只换可视区的几十行
+    // 滚动时只换可视区的几十行
     let rowFrame=0;
     tableScroll.addEventListener('scroll',()=>{
       syncBar();
       if(!this.visible||rowFrame)return;
       rowFrame=requestAnimationFrame(()=>{rowFrame=0;this.renderRows();});
     },{passive:true});
-    // 1.155：窗口/分区尺寸变化后要重算可视行数，否则最大化后下面会空一大片
+    // 窗口/分区尺寸变化后要重算可视行数，否则最大化后下面会空一大片
     let resizeFrame=0;
     new ResizeObserver(()=>{
       if(resizeFrame)return;
@@ -208,7 +208,7 @@ export class CardBrowser {
       const ids=this.selectedCards().filter(node=>!node.deletedAt).map(node=>node.id);
       if(ids.length){await this.flushEdit();await this.actions.remove(ids);}
     });
-    // 1.140：编辑区工具条（Markdown 语法），作用在最后获得焦点的正文/答案框上
+    // 编辑区工具条（Markdown 语法），作用在最后获得焦点的正文/答案框上
     let lastField:HTMLTextAreaElement|null=null;
     for(const field of [this.element('browser-editor-content'),this.element('browser-editor-answer')]){
       field.addEventListener('focusin',()=>{lastField=field as HTMLTextAreaElement;});
@@ -254,7 +254,7 @@ export class CardBrowser {
       this.ratio=event.key==='Home'?42:Math.max(22,Math.min(65,this.ratio+(event.key==='ArrowUp'?-5:5)));this.applyRatio();
       void window.reading.request('settingSet',{key:'browserSplit',value:this.ratio});
     };
-    // 1.135：表格和右侧编辑区之间加一条可拖动的分隔线（和 Anki 浏览器一样能调编辑区宽度）
+    // 表格和右侧编辑区之间加一条可拖动的分隔线（和 Anki 浏览器一样能调编辑区宽度）
     const editorRule=this.element('browser-editor-rule');
     editorRule.onpointerdown=event=>{
       if(event.button!==0)return;event.preventDefault();editorRule.setPointerCapture(event.pointerId);document.body.classList.add('browser-dragging');
@@ -331,7 +331,7 @@ export class CardBrowser {
     this.activeId=this.selectedIds.has(id)?id:[...this.selectedIds].at(-1)??null;
     this.highlight();
   }
-  // 1.6 ①：刷新表头排序指示（▲/▼ + aria-sort）。每次排序状态变化后调用。
+  // 刷新表头排序指示（▲/▼ + aria-sort）。每次排序状态变化后调用。
   private updateSortMarkers(){
     for(const th of this.host.querySelectorAll<HTMLElement>('#browser-table th[data-sort]')){
       const active=th.dataset.sort===this.order;
@@ -339,7 +339,7 @@ export class CardBrowser {
       th.querySelector('.sort-arrow')!.textContent=active?(this.direction==='asc'?'▲':'▼'):'';
     }
   }
-  // ===== 1.133：列配置（右键表头勾选显示哪些列、拖动表头换顺序，顺序与隐藏状态落入设置）=====
+  // ===== 列配置（右键表头勾选显示哪些列、拖动表头换顺序，顺序与隐藏状态落入设置）=====
   private visibleColumns():ColumnKey[]{return this.columnOrder.filter(key=>!this.hiddenColumns.has(key));}
   private persistColumns(){void window.reading.request('settingSet',{key:'browserColumns',value:{order:this.columnOrder,hidden:[...this.hiddenColumns]}});}
   private renderHead(){
@@ -369,7 +369,7 @@ export class CardBrowser {
         handle.setPointerCapture(event.pointerId);
         const startX=event.clientX,startWidth=th.getBoundingClientRect().width;
         document.body.classList.add('browser-resizing');
-        // 1.171：列宽由 colgroup 控制（表格是 table-layout:fixed），拖拽要改 col 而不是 th
+        // 列宽由 colgroup 控制（表格是 table-layout:fixed），拖拽要改 col 而不是 th
         handle.onpointermove=move=>this.setColumnWidth(key,Math.max(42,startWidth+move.clientX-startX));
         const finish=()=>{
           handle.onpointermove=null;handle.onpointerup=null;handle.onpointercancel=null;document.body.classList.remove('browser-resizing');
@@ -405,9 +405,9 @@ export class CardBrowser {
     this.syncColgroups(visible,lastKey);
     this.fitColumns();
   }
-  /** 1.167：表头表与表体表共用同一套列宽（colgroup），保证虚拟表格两边的列对齐。 */
-  /** 1.171：按列 key 设置像素宽（同时改表头表与表体表的 col），拖拽列宽用。 */
-  /** 1.173：窗口变窄时按比例压缩各列像素宽（只保留最后一列最小 90px），窗口变宽则回到保存的像素宽。
+  /** 表头表与表体表共用同一套列宽（colgroup），保证虚拟表格两边的列对齐。 */
+  /** 按列 key 设置像素宽（同时改表头表与表体表的 col），拖拽列宽用。 */
+  /** 窗口变窄时按比例压缩各列像素宽（只保留最后一列最小 90px），窗口变宽则回到保存的像素宽。
    *  只在窗口 resize 时调用——拖编辑区分隔线不改列宽（保持 Anki 那种固定列宽的手感）。 */
   private fitColumns(){
     const pane=this.element('browser-table-pane').clientWidth||0;
@@ -467,7 +467,7 @@ export class CardBrowser {
     const onDown=(down:PointerEvent)=>{if(down.target instanceof Node&&menu.contains(down.target))return;menu.remove();document.removeEventListener('pointerdown',onDown,true);};
     setTimeout(()=>document.addEventListener('pointerdown',onDown,true),0);
   }
-  /** 1.103：在右侧编辑区显示并允许编辑这张卡（Anki 浏览器的做法） */
+  /** 在右侧编辑区显示并允许编辑这张卡（Anki 浏览器的做法） */
   private async showEditor(id:string,refresh=false):Promise<void>{
     if(this.editorId===id&&!refresh)return;
     const panel=this.element('browser-editor');
@@ -482,13 +482,13 @@ export class CardBrowser {
       (this.element('browser-editor-title') as HTMLInputElement).value=node.title;
       (this.element('browser-editor-content') as HTMLTextAreaElement).value=node.content;
       (this.element('browser-editor-answer') as HTMLTextAreaElement).value=node.answer;
-      // 1.206：搜索命中后，在下方编辑区选中并滚到第一处命中（标题命中就不选）。
+      // 搜索命中后，在下方编辑区选中并滚到第一处命中（标题命中就不选）。
       this.revealMatch((this.element('browser-query') as HTMLInputElement).value,node.content,node.answer);
-      // 1.139：像 Anki 一样按「正面/背面」两个可折叠区显示；非检测卡只显示正面
+      // 像 Anki 一样按「正面/背面」两个可折叠区显示；非检测卡只显示正面
       this.element('browser-editor-back').hidden=node.kind!=='cloze';
       this.element('browser-editor-hint').textContent=t('改动自动保存（标题也可以直接改）；双击行可用新窗口编辑');
       this.bindTitleEditing(id);
-      // 1.135：Anki 式即时编辑——正文/答案改完自动保存，不用点「保存」
+      // Anki 式即时编辑——正文/答案改完自动保存，不用点「保存」
       const autosave=(input:HTMLTextAreaElement)=>{
         input.oninput=()=>{
           clearTimeout(this.autosaveTimer);
@@ -519,7 +519,7 @@ export class CardBrowser {
       return;
     }
   }
-  /** 1.172：编辑区顶部的标题可直接改，停手 500ms 自动保存，并同步表格行与目录树。 */
+  /** 编辑区顶部的标题可直接改，停手 500ms 自动保存，并同步表格行与目录树。 */
   private bindTitleEditing(id:string){
     const input=this.element('browser-editor-title') as HTMLInputElement;
     clearTimeout(this.titleTimer);
@@ -556,16 +556,16 @@ export class CardBrowser {
     const choice=(host:HTMLElement,label:string,group:'folder'|'kind'|'status',value:string)=>{
       const button=document.createElement('button');button.dataset.group=group;button.dataset.value=value;
       if(group==='folder')button.innerHTML=icon('folder');
-      // 1.101：学习状态前加彩色圆点（仿 Anki），一眼区分状态
+      // 学习状态前加彩色圆点（仿 Anki），一眼区分状态
       if(group==='status'&&value){const dot=document.createElement('i');dot.className='state-dot state-'+value;dot.setAttribute('aria-hidden','true');button.append(dot);}
       const text=document.createElement('span');text.textContent=label;button.append(text);button.title=label;
       button.onclick=event=>{event.preventDefault();event.stopPropagation();
-        // 1.191：默认不选 = 不筛选；点一次选中（可多选），再点一次取消。牌组仍是单选，「全部牌组」= 不筛牌组。
+        // 默认不选 = 不筛选；点一次选中（可多选），再点一次取消。牌组仍是单选，「全部牌组」= 不筛牌组。
         if(group==='folder')this.folderId=value||null;
         else if(group==='kind')toggleSet(this.kinds,value as NodeKind);
         else toggleSet(this.statuses,value as CatalogStatus);
         this.highlightFilters();void this.refresh();};
-      // 1.142：牌组后面跟今日到期数（新卡+学习中+复习），仿 Anki 的牌组计数
+      // 牌组后面跟今日到期数（新卡+学习中+复习），仿 Anki 的牌组计数
       if(group==='folder'&&value){
         const counts=this.folderCounts[value],due=(counts?.new||0)+(counts?.learning||0)+(counts?.review||0);
         const badge=document.createElement('span');badge.className='browser-filter-count';badge.textContent=due?String(due):'';
@@ -589,7 +589,7 @@ export class CardBrowser {
   }
   private highlightFilters(){for(const button of this.filters.querySelectorAll<HTMLButtonElement>('button')){
     const group=button.dataset.group,value=button.dataset.value??'';
-    // 1.191：牌组空值（「全部牌组」）在没有牌组筛选时高亮；类型/状态按是否选中高亮，可同时多个。
+    // 牌组空值（「全部牌组」）在没有牌组筛选时高亮；类型/状态按是否选中高亮，可同时多个。
     const active=group==='folder'?(this.folderId===null?value==='':this.folderId===value)
       :group==='kind'?this.kinds.has(value as NodeKind):this.statuses.has(value as CatalogStatus);
     button.classList.toggle('is-active',active);button.setAttribute('aria-pressed',String(active));
@@ -597,7 +597,7 @@ export class CardBrowser {
   }}
   open(status?:'conflict',initialId?:string|null){return this.actions.run(async()=>{
     await this.actions.beforeOpen();this.activeFolder=null;this.visible=true;this.host.hidden=false;this.rule.hidden=false;this.filters.hidden=false;this.actions.visibility(true);
-    // 1.133：读取并行发出，少绕几趟 IPC（打开更快）
+    // 读取并行发出，少绕几趟 IPC（打开更快）
     const [folders,layout,ratio,widths,columnsSaved,editorWidth,folderCounts]=await Promise.all([
       window.reading.request<FolderInfo[]>('folders'),
       window.reading.request<any>('settingGet',{key:'browserFilterLayout'}),
@@ -609,11 +609,11 @@ export class CardBrowser {
     ]);
     const savedColumns=columnsSaved;
     if(folderCounts)this.folderCounts=folderCounts;
-    // 1.135：编辑区宽度（拖动表格/编辑区之间的分隔线保存下来的）
+    // 编辑区宽度（拖动表格/编辑区之间的分隔线保存下来的）
     if(typeof editorWidth==='number'&&editorWidth>=240)this.host.style.setProperty('--browser-editor-width',Math.round(editorWidth)+'px');
     this.folders=folders;
     if(layout){this.groupOpen={...this.groupOpen,...layout.groups};this.expandedDecks=new Set(layout.decks||[]);}
-    // 1.133：恢复列顺序与隐藏状态
+    // 恢复列顺序与隐藏状态
     if(savedColumns){
       const known=new Set<string>(columnDefs.map(column=>column.key));
       const order=(savedColumns.order||[]).filter(key=>known.has(key)) as ColumnKey[];
@@ -629,18 +629,18 @@ export class CardBrowser {
     }
     if(!folders.some(folder=>folder.id===this.folderId))this.folderId=null;this.renderFilters(folders);
     if(ratio)this.ratio=Math.max(22,Math.min(65,ratio));this.applyRatio();
-    // 1.6 ②：恢复上次的列宽权重（按列 key 存）；标题列也参与比例分配，表格不会横向溢出
+    // 恢复上次的列宽权重（按列 key 存）；标题列也参与比例分配，表格不会横向溢出
     if(widths)for(const [key,value] of Object.entries(widths)){
       if(typeof value==='number'&&value>0)this.columnWeights[key as ColumnKey]=value;
     }
     this.renderHead();this.updateSortMarkers();
-    // 1.133：冲突列表要读冲突文件+查库，比列表本身慢。普通打开时先出列表，冲突标记随后补；
+    // 冲突列表要读冲突文件+查库，比列表本身慢。普通打开时先出列表，冲突标记随后补；
     // 只有「打开冲突文件」这种本来就只看冲突的场景才先等它。
     if(status==='conflict')await this.loadConflicts().catch(()=>{});
     else void this.loadConflicts().then(()=>{if(this.visible)this.render();}).catch(()=>{});
     await this.reload();
-    // 1.137：打开时默认选中主窗口目录树里那张卡（并滚到它、在右侧显示）
-    // 1.156：如果这张卡被当前筛选挡住了，先清掉筛选再找，保证一定能选中
+    // 打开时默认选中主窗口目录树里那张卡（并滚到它、在右侧显示）
+    // 如果这张卡被当前筛选挡住了，先清掉筛选再找，保证一定能选中
     let target=initialId&&this.items.some(item=>item.id===initialId)?initialId:this.activeId;
     if(initialId&&target!==initialId){
       this.statuses.clear();this.kinds.clear();this.folderId=null;
@@ -655,7 +655,7 @@ export class CardBrowser {
       await this.showEditor(target);
     }
     (this.element('browser-query') as HTMLInputElement).focus();
-    // 1.159：窗口显示/最大化可能在首帧之后才完成，补一次重算，保证铺满
+    // 窗口显示/最大化可能在首帧之后才完成，补一次重算，保证铺满
     setTimeout(()=>{if(this.visible)this.renderRows();},150);
   });}
   close(){return this.actions.run(async()=>{await this.actions.beforeQuery();await this.flushEdit();this.hide();await this.actions.closed();});}
@@ -699,14 +699,14 @@ export class CardBrowser {
     resume.hidden=!multi;
     resume.disabled=!cards.some(item=>!this.enabled(item))||cards.some(item=>!this.enabled(item)&&!canEnable(item));
     (this.element('browser-move') as HTMLButtonElement).disabled=!cards.length;
-    // 1.194：多选删除；垃圾桶里的卡片不能再软删，所以只按未删除的选中项决定可用性。
+    // 多选删除；垃圾桶里的卡片不能再软删，所以只按未删除的选中项决定可用性。
     (this.element('browser-delete') as HTMLButtonElement).disabled=!cards.some(card=>!card.deletedAt);
-    // 1.142：标题栏显示总数与已选数（仿 Anki 的「已选取 N 张卡片，共 M 张」）
+    // 标题栏显示总数与已选数（仿 Anki 的「已选取 N 张卡片，共 M 张」）
     this.element('browser-total').textContent=t('共 {0} 张{1}',this.total,this.selectedIds.size?t(' · 已选 {0} 张',this.selectedIds.size):'');
     (this.element('browser-info') as HTMLButtonElement).disabled=cards.length!==1;
     this.element('browser-selection').textContent=this.selectedIds.size>1?t('已选 {0} 张',this.selectedIds.size):t('Ctrl 多选 · Shift 连选');
   }
-  /** 1.209：搜索/筛选的查询条件，分页取数时复用。 */
+  /** 搜索/筛选的查询条件，分页取数时复用。 */
   private queryInput(offset:number,limit:number,countTotal=true):CatalogQuery{
     const input:CatalogQuery={query:(this.element('browser-query') as HTMLInputElement).value,folderId:this.folderId,
       kinds:[...this.kinds],statuses:[...this.statuses],
@@ -720,7 +720,7 @@ export class CardBrowser {
     this.loadingMore=false;
     const page=await window.reading.request<CatalogPage>('catalog',this.queryInput(0,CardBrowser.loadChunk));
     if(sequence!==this.sequence||!this.visible)return;
-    // 1.209：先取前 400 行（打字时不至于每次都搬上万行），滚到已加载的末尾再续下一段。
+    // 先取前 400 行（打字时不至于每次都搬上万行），滚到已加载的末尾再续下一段。
     this.items=page.items;this.total=page.total;this.render();
     const visible=new Set(this.items.map(item=>item.id));
     this.selectedIds=new Set([...this.selectedIds].filter(id=>visible.has(id)));
@@ -730,7 +730,7 @@ export class CardBrowser {
     if(this.activeId&&!this.selectedIds.size)this.selectRow(this.activeId);else this.highlight();
     await this.actions.select(this.activeId);
   }
-  /** 1.209：滚到已加载末尾时续下一段（最多续到 total）。 */
+  /** 滚到已加载末尾时续下一段（最多续到 total）。 */
   private async loadMore(){
     if(this.loadingMore||!this.visible||this.items.length>=this.total)return;
     this.loadingMore=true;
@@ -757,11 +757,11 @@ export class CardBrowser {
   }
   private render(){
     this.element('browser-total').textContent=t('共 {0} 张',this.total);
-    // 1.173：底部不再重复显示总数（标题栏已有「共 N 张」）
+    // 底部不再重复显示总数（标题栏已有「共 N 张」）
     this.element('browser-table-scroll').scrollTop=0;
     this.renderRows();
   }
-  /** 1.167：真正的虚拟表格（和 Anki 的 QTableView 同思路）：表头单独一张固定表，
+  /** 真正的虚拟表格（和 Anki 的 QTableView 同思路）：表头单独一张固定表，
    *  表体只渲染可视区上下各 8/16 行，外面用固定高度的 canvas 撑出滚动范围。
    *  DOM 里永远只有约 40 行，拖动分隔线/缩放/滚动都是常数成本。 */
   private renderRows(){
@@ -778,17 +778,17 @@ export class CardBrowser {
     }
     const view=Math.max(120,scroll.clientHeight||window.innerHeight-170);
     const first=Math.floor(scroll.scrollTop/this.rowHeight);
-    // 1.209：可视区快碰到已加载的末尾就续下一段，滚动条高度按 total 撑，位置不会跳。
+    // 可视区快碰到已加载的末尾就续下一段，滚动条高度按 total 撑，位置不会跳。
     if(first+Math.ceil(view/this.rowHeight)+16>loaded&&loaded<this.total)void this.loadMore();
     const start=Math.max(0,Math.min(loaded-1,first-8));
     const end=Math.min(loaded,start+Math.ceil(view/this.rowHeight)+16);
     body.style.top=(start*this.rowHeight)+'px';
     rows.innerHTML=this.renderRowsHtml(columns,start,end);
-    // 1.207：虚拟滚动重建行后会丢选中/聚焦样式，这里补回。
+    // 虚拟滚动重建行后会丢选中/聚焦样式，这里补回。
     this.highlight();
     this.syncScrollbar();
   }
-  /** 1.163：拼 HTML 字符串一次赋值（比逐格 createElement 快一个量级）；事件委托挂在 tbody 上。 */
+  /** 拼 HTML 字符串一次赋值（比逐格 createElement 快一个量级）；事件委托挂在 tbody 上。 */
   private renderRowsHtml(columns:ColumnKey[],from:number,to:number):string{
     const esc=(value:string)=>value.replace(/[&<>"]/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch] as string));
     const parts:string[]=[];
@@ -829,7 +829,7 @@ export class CardBrowser {
       const node=this.items.find(item=>item.id===row.dataset.id);
       if(!node)return;
       if(event.ctrlKey||event.metaKey||event.shiftKey)return;
-      // 1.193：有冲突的卡片双击直接进入冲突处理（一张接一张），不先打开编辑窗口。
+      // 有冲突的卡片双击直接进入冲突处理（一张接一张），不先打开编辑窗口。
       if(this.conflicts.get(node.id)?.length){this.selectRow(node.id);void this.openConflict(node.id);return;}
       if(node.deletedAt||node.kind==='folder')return;
       this.selectRow(node.id);this.actions.openWindow(node.id);
@@ -837,7 +837,7 @@ export class CardBrowser {
     rows.addEventListener('contextmenu',event=>{
       const row=(event.target as HTMLElement).closest<HTMLElement>('tr[data-id]');if(!row)return;
       const node=this.items.find(item=>item.id===row.dataset.id);
-      // 1.191：文件夹和垃圾桶里的卡片（冲突筛选会显示）以前直接 return，右键没菜单；现在都交给上层。
+      // 文件夹和垃圾桶里的卡片（冲突筛选会显示）以前直接 return，右键没菜单；现在都交给上层。
       if(!node)return;
       event.preventDefault();this.actions.context({id:node.id,kind:node.kind,deletedAt:node.deletedAt},event);
     });
@@ -854,9 +854,9 @@ export class CardBrowser {
       });
     });
   }
-  /** 1.191：右键菜单用——这张卡是否有内容/排程冲突。 */
+  /** 右键菜单用——这张卡是否有内容/排程冲突。 */
   hasConflict(id:string):boolean{return Boolean(this.conflicts.get(id)?.length);}
-  /** 1.193：把当前冲突按卡片分组，标题优先用表格行，取不到再退回版本标题/编号。 */
+  /** 把当前冲突按卡片分组，标题优先用表格行，取不到再退回版本标题/编号。 */
   private async conflictGroups():Promise<ConflictGroup[]>{
     const groups:ConflictGroup[]=[];
     for(const [nodeId,items] of this.conflicts){
@@ -874,7 +874,7 @@ export class CardBrowser {
     }
     return groups;
   }
-  /** 1.191：右键「冲突文件…」入口；1.193 起按队列处理，一张接一张。 */
+  /** 右键「冲突文件…」入口；按队列处理，一张接一张。 */
   async openConflict(id:string):Promise<void>{
     if(!this.conflicts.get(id)?.length)return;
     const groups=await this.conflictGroups();

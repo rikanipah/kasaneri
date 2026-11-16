@@ -97,7 +97,7 @@ leech 属性后面带累计重来次数，比如 leech(6)，一眼能看出循�
 
 ## 安装说明
 
-1. 在仓库的 [Releases](https://github.com/rikanipah/Kasaneri/releases) 里下载 `Kasaneri-Setup-1.0.0.exe`。
+1. 在仓库的 [Releases](https://github.com/rikanipah/Kasaneri/releases) 里下载 `Kasaneri-Setup-0.5.0.exe`。
 2. 双击安装，按向导走完即可。按用户安装，默认装到 `%LOCALAPPDATA%\Programs\Kasaneri`，不需要管理员权限。
 3. 程序没有代码签名，Windows 可能弹「Windows 已保护你的电脑」，点「更多信息 → 仍要运行」。
 4. 第一次启动会让你选资料库文件夹：可以新建一个空文件夹，也可以打开已有的资料库，已有的设置会沿用。

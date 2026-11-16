@@ -1,7 +1,7 @@
 import { build } from 'esbuild';
 import { createRequire, builtinModules } from 'node:module';
-import { statSync, readFileSync, writeFileSync, mkdirSync, cpSync } from 'node:fs';
-import { resolve, dirname, join, extname } from 'node:path';
+import { statSync, readFileSync, writeFileSync, mkdirSync, cpSync, realpathSync } from 'node:fs';
+import { resolve, dirname, join, extname, relative, isAbsolute, sep } from 'node:path';
 
 mkdirSync('dist', {recursive:true});
 const builtins=new Set([...builtinModules,...builtinModules.map(name=>'node:'+name)]);
@@ -14,8 +14,22 @@ function resolveLocal(specifier,importer){
 }
 export async function bundle(entry,output,platform){
  const input=resolve(entry);
+ const project=process.cwd();
+ const dependencies=realpathSync(resolve('node_modules'));
+ const files=new Map();
+ function inside(root,path){
+  const fromRoot=relative(root,path);
+  if(!isAbsolute(fromRoot)&&fromRoot!=='..'&&!fromRoot.startsWith('..'+sep))return fromRoot.split(sep).join('/');
+ }
+ function modulePath(path){
+  const dependency=inside(dependencies,path);
+  if(dependency)return 'node_modules/'+dependency;
+  const local=inside(project,path);
+  if(local)return local;
+  throw Error('Cannot bundle a file outside the project or installed dependencies');
+ }
  const result=await build({
-  stdin:{contents:readFileSync(input,'utf8'),sourcefile:input,loader:'ts'},
+  stdin:{contents:readFileSync(input,'utf8'),sourcefile:modulePath(input),loader:'ts'},
   platform,format:platform==='browser'?'iife':'cjs',bundle:true,write:false,
   target:platform==='browser'?'chrome130':'node22',legalComments:'eof',
   plugins:[{name:'host-file-access',setup(builder){
@@ -23,13 +37,18 @@ export async function bundle(entry,output,platform){
     // node:sqlite 是 Node 22.5+ 新内置模块，旧版 esbuild 的内置清单里没有，必须显式声明为 external，
     // 否则在 Node 20 的 CI 上会报 Cannot find module 'node:sqlite'。
     if(builtins.has(args.path)||args.path==='electron'||args.path==='sharp'||args.path==='node:sqlite')return {path:args.path,external:true};
-    const parent=args.importer||input;
+    const parent=files.get(args.importer)||input;
     const path=args.path.startsWith('.')?resolveLocal(args.path,parent):createRequire(parent).resolve(args.path);
-    return {path,namespace:'host'};
+    // Resolve imports from their real locations but give the bundled modules relative names.
+    const name=modulePath(path);
+    files.set(name,path);
+    return {path:name,namespace:'host'};
    });
-   builder.onLoad({filter:/.*/,namespace:'host'},args=>({
-    contents:readFileSync(args.path,'utf8'),loader:extname(args.path)==='.json'?'json':extname(args.path)==='.ts'?'ts':'js'
-   }));
+   builder.onLoad({filter:/.*/,namespace:'host'},args=>{
+    const path=files.get(args.path);
+    const extension=extname(path);
+    return {contents:readFileSync(path,'utf8'),loader:extension==='.json'?'json':extension==='.ts'?'ts':'js'};
+   });
   }}]
  });
  writeFileSync(output,result.outputFiles[0].contents);
@@ -42,12 +61,12 @@ await bundle('src/ui/app.ts','dist/renderer.js','browser');
 cpSync('src/ui/index.html','dist/index.html');
 cpSync('src/ui/onboarding.html','dist/onboarding.html');
 cpSync('src/ui/styles.css','dist/styles.css');
-  // 1.22：正文字体（Inter）随包分发
+  // 正文字体（Inter）随包分发
   cpSync('src/ui/fonts','dist/fonts',{recursive:true});
 mkdirSync('dist/katex',{recursive:true});
 cpSync('node_modules/katex/dist/katex.min.css','dist/katex/katex.min.css');
 cpSync('node_modules/katex/dist/fonts','dist/katex/fonts',{recursive:true});
-// 1.6 ⑧：xterm 的样式单独复制（JS 会打进 renderer.js，CSS 由 index.html 引用）。
+// xterm 的样式单独复制（JS 会打进 renderer.js，CSS 由 index.html 引用）。
 mkdirSync('dist/xterm',{recursive:true});
 cpSync('node_modules/@xterm/xterm/css/xterm.css','dist/xterm/xterm.css');
 console.log('Built desktop main, database worker, preload and editor.');

@@ -30,7 +30,7 @@ Review and To-do have separate schedules. To-do brings back topics so you can re
 
 ## Install on Windows
 
-1. Download **Kasaneri-Setup-1.0.0.exe** from [Releases](https://github.com/rikanipah/Kasaneri/releases).
+1. Download **Kasaneri-Setup-0.5.0.exe** from [Releases](https://github.com/rikanipah/Kasaneri/releases).
 2. Open the installer and choose **简体中文** or **English**. Simplified Chinese is preselected. The per-user installation defaults to %LOCALAPPDATA%\Programs\Kasaneri and requires no administrator access.
 3. On first launch, choose an empty folder for a new library or select an existing Kasaneri library. A new library has five English tutorial cards in its default folder.
 4. To change the interface language, go to **Settings → General → Interface language** (设置 → 常规 → 界面语言). Choose a language and reopen Kasaneri.

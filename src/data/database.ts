@@ -9,7 +9,7 @@ import {migrateLibrary} from './migrations';
 import {TrashStore} from './trash-store';
 import type { Anchor, Asset, ChildrenPage, CreateInput, Material, NodeInput, SaveInput, TreeNode } from '../core/model';
 
-// 1.6：metadata 列加入公共列清单。TreeNode 类型没有 metadata 字段，多出来的值会被忽略；
+// metadata 列加入公共列清单。TreeNode 类型没有 metadata 字段，多出来的值会被忽略；
 // Material（getNode）会解析它，见下方 material()。
 export const metadataColumns = `n.id, n.parent_id AS parentId, n.folder_id AS folderId,n.priority,n.source_id AS sourceId, n.kind, n.title, n.position, n.metadata,
  EXISTS(SELECT 1 FROM nodes c WHERE c.parent_id=n.id AND c.deleted_at IS NULL) AS hasChildren`;
@@ -29,7 +29,7 @@ export class Repository {
   readonly db: DatabaseSync;
   private statements = new Map<string, StatementSync>();
 
-  /** 1.23：垃圾桶文件夹（与数据库所在文件夹同级，默认 <dataDir>/../trash），删除的卡片正文快照落在这里。 */
+  /** 垃圾桶文件夹（与数据库所在文件夹同级，默认 <dataDir>/../trash），删除的卡片正文快照落在这里。 */
   readonly trashDir: string;
   private readonly trash:TrashStore;
   constructor(readonly dataDir: string, trashDir?: string) {
@@ -79,7 +79,7 @@ export class Repository {
 
   ensureDefaultFolder(exclude?:string):string {
     const id=exclude==='folder:unfiled'?'folder:recovered':'folder:unfiled';
-    // 1.119：默认文件夹固定叫「默认」，并用极小 position 保证排在所有文件夹最上面；
+    // 默认文件夹固定叫「默认」，并用极小 position 保证排在所有文件夹最上面；
     // 冲突时连 title/position 一起更新，旧库里的「未归类」会被改名并置顶。
     const stored=this.getSetting('studySettings') as {defaultFolderName?:string}|null;
     const title=id==='folder:unfiled'?(String(stored?.defaultFolderName||t('默认')).trim()||t('默认')):t('保留的卡片');
@@ -92,7 +92,7 @@ export class Repository {
     return id;
   }
 
-  /** 1.204：设置里改了默认文件夹名称时，立即重命名现有的默认文件夹。 */
+  /** 设置里改了默认文件夹名称时，立即重命名现有的默认文件夹。 */
   renameDefaultFolder(name:string):void{
     const title=String(name||'').trim()||t('默认');
     this.query("UPDATE nodes SET title=?,updated_at=? WHERE id='folder:unfiled'").run(title,new Date().toISOString());
@@ -180,7 +180,7 @@ export class Repository {
   anchors(id: string): {id:string;anchor:Anchor}[] {
     return this.query("SELECT id,anchor,kind FROM nodes WHERE source_id=? AND anchor IS NOT NULL AND deleted_at IS NULL")
       .all(id).map(row=>{const anchor=JSON.parse(String(row.anchor));
-    // 1.60：把来源节点 id 一起给渲染层，供 Ctrl+点击高亮跳转
+    // 把来源节点 id 一起给渲染层，供 Ctrl+点击高亮跳转
     return {id:String(row.id),anchor:{...anchor,nodeId:String(row.id),highlight:anchor.highlight||(row.kind==='cloze'?'cloze':'extract')}};});
   }
 
@@ -225,7 +225,7 @@ export class Repository {
     this.query('UPDATE reading_state SET enabled=1,revision=revision+1 WHERE node_id=?').run(id);
   }
 
-  // 1.6 ⑦：按卡片读写 metadata（浅合并）。
+  // 按卡片读写 metadata（浅合并）。
   // 目前唯一的用途是启动配置 metadata.launch={command,args?,cwd?}（见 renderer/app.ts 右键菜单）。
   // 校验放在 worker 调用方；这里只做 JSON 合并与更新，保证不误伤其他字段。
   setNodeMetadata(id:string, patch:Record<string,unknown>):Material|null {
@@ -258,10 +258,10 @@ export class Repository {
         if(input.kind==='cloze'){content=source.slice(0,from)+'[...]'+source.slice(to);answer=selected;}
         else content=selected;
       }
-      // 1.133：独立「添加卡片」窗口直接给正文/答案（不经过摘录选区）
+      // 独立「添加卡片」窗口直接给正文/答案（不经过摘录选区）
       if(input.content!==undefined)content=input.content;
       if(input.answer!==undefined)answer=input.answer;
-      // 1.168：没有显式标题时——检测卡按答案命名；提取/主题按正文（选区）自动命名。
+      // 没有显式标题时——检测卡按答案命名；提取/主题按正文（选区）自动命名。
       // 选区里只有图片/音频这类附件标记时，退回到"未命名提取/未命名检测卡"。
       const plain=content.replace(/!\[[^\]]*\]\([^)]*\)/g,' ').replace(/\[[^\]]*asset:[^\]]*\]/g,' ');
       const fromText=titleFrom(plain);
@@ -297,7 +297,7 @@ export class Repository {
   move(id:string,parentId:string|null,restore?:{expectedParentId:string|null}):void {
     this.transaction(()=>{
       const node=this.getNode(id),target=parentId?this.getNode(parentId):null;
-      // 1.72：任何卡片都可以移动（此前只允许 folder/topic，导致提取与检测卡"移至…"直接报错）
+      // 任何卡片都可以移动（此前只允许 folder/topic，导致提取与检测卡"移至…"直接报错）
       if(!node||(!target&&parentId))throw Error(t('目标位置不存在。'));
       if(restore&&node.parentId!==restore.expectedParentId)throw Error(t('卡片位置已变化，无法撤销这次移动。'));
       if(target&&target.kind!=='folder'&&(!restore||node.kind==='folder'))throw Error(t('只能移动到文件夹里。'));
@@ -360,7 +360,7 @@ export class Repository {
     return this.query('SELECT id,filename,mime,size,relative_path AS relativePath FROM assets WHERE id=?').get(id) as unknown as Asset|null;
   }
 
-  // ===== 1.207：附件管理（未引用附件进回收站，可恢复/彻底删除） =====
+  // ===== 附件管理（未引用附件进回收站，可恢复/彻底删除） =====
   private assetTrashManifest(){return join(this.trashDir,'assets','manifest.json');}
   private readAssetTrash():Array<Asset&{trashedAt:number;trashName:string}>{
     try{const value=JSON.parse(readFileSync(this.assetTrashManifest(),'utf8'));return Array.isArray(value)?value:[];}catch{return [];}

@@ -19,7 +19,7 @@ type SyncDependencies = {
   waitForDatabase:()=>Promise<void>;
   isDatabaseRunning:()=>boolean;
   isMainWindow:(sender:WebContents)=>boolean;
-  /** 1.133：独立浏览窗口也要能读冲突列表并处理冲突（1.133 起浏览卡片常驻子窗口）。 */
+  /** 独立浏览窗口也要能读冲突列表并处理冲突（浏览卡片常驻子窗口）。 */
   isOurWindow?:(sender:WebContents)=>boolean;
   isEditingElsewhere:(sender:WebContents,nodeId:string)=>boolean;
   dataDir:string;
@@ -33,11 +33,11 @@ const syncDefault={enabled:false,port:38641,peers:[] as SyncPeer[]};
 export function createSyncService({
   contentSync, call, waitForDatabase, isDatabaseRunning, isMainWindow, isOurWindow, isEditingElsewhere, dataDir, stateDir, getVersion, writeLog,
 }:SyncDependencies){
-  // 1.133：冲突列表与冲突处理允许主窗口和独立浏览子窗口发起，其余同步操作仍只认主窗口。
+  // 冲突列表与冲突处理允许主窗口和独立浏览子窗口发起，其余同步操作仍只认主窗口。
   const canHandleConflicts=(sender:WebContents)=>isMainWindow(sender)||Boolean(isOurWindow?.(sender));
   let syncDeviceName=hostname();
   let syncConfig={...syncDefault};let syncPassphrase='';let syncServer:ReturnType<typeof createSyncHttpServer>|null=null;
-  // 1.109：同步反馈——running 表示正在跑，logs 保存最近 30 次结果（时间/对端/条数/耗时/错误）
+  // 同步反馈——running 表示正在跑，logs 保存最近 30 次结果（时间/对端/条数/耗时/错误）
   let syncStatus:any={at:0,pulled:0,pushed:0,error:'',running:false,lastOk:0,lastCheck:0,logs:[] as any[]};
   let lastLogSignature='';
   function pushSyncLog(entry:any){syncStatus.logs.unshift(entry);if(syncStatus.logs.length>30)syncStatus.logs.length=30;}
@@ -55,7 +55,7 @@ export function createSyncService({
     syncServer.listen(syncConfig.port);
   }
 
-  // 1.114：冲突文件目录 = <data>/conflicts，文件名带日期时间与卡片 id（类似 Syncthing 的 .sync-conflict）
+  // 冲突文件目录 = <data>/conflicts，文件名带日期时间与卡片 id（类似 Syncthing 的 .sync-conflict）
   const conflictsDir=join(dataDir,'conflicts');
   async function writeConflicts(list:any[],peer:string){
     try{
@@ -104,7 +104,7 @@ export function createSyncService({
     const startedAt=Date.now();let pulled=0,pushed=0;
     let contentSummary='',contentError:Error|undefined;
     const post=syncPeerPost(base,syncPassphrase);
-    // 1.30：时钟保护——先 ping 拿到对端时间，偏差超过容差就拒绝同步，
+    // 时钟保护——先 ping 拿到对端时间，偏差超过容差就拒绝同步，
     // 否则两端 (reviewedAt, id) 全序会错乱（快的一方"未来"op 会盖掉慢的一方）。
     const ping=await post('/sync/ping',{});
     const peerNow=Number(ping.now);
@@ -141,7 +141,7 @@ export function createSyncService({
       const batch=toFetch.slice(start,start+2000);
       const {ops}=await post('/sync/fetch',{ids:batch});
       const result=await call('syncApplyOps',{ops});syncStatus.pulled+=result.applied;pulled+=result.applied;
-      // 1.114：被覆盖的操作写成冲突文件（保留内容与日期），供用户判断
+      // 被覆盖的操作写成冲突文件（保留内容与日期），供用户判断
       if(Array.isArray(result.conflicts)&&result.conflicts.length)await writeConflicts(result.conflicts,base);
     }
     for(let start=0;start<toSend.length;start+=2000){
@@ -173,7 +173,7 @@ export function createSyncService({
     if(contentError)throw contentError;
     syncStatus.at=Date.now();
     syncStatus.lastOk=Date.now();
-    // 1.113：没有变化就不刷日志（Syncthing 风格），只更新时间戳
+    // 没有变化就不刷日志（Syncthing 风格），只更新时间戳
     if(pulled>0||pushed>0||contentSummary){
       const signature='ok:'+base+':'+pulled+':'+pushed+contentSummary;
       if(signature!==lastLogSignature){lastLogSignature=signature;
@@ -210,7 +210,7 @@ export function createSyncService({
         catch(error){
           const message=syncErrorMessage(error);
           failures.push(peer.name+'：'+message);
-          // 1.113：同一条错误不重复刷屏，只在变化时记一条
+          // 同一条错误不重复刷屏，只在变化时记一条
           const signature='error:'+peer.name+':'+message;
           if(signature!==lastLogSignature){lastLogSignature=signature;
             pushSyncLog({at:Date.now(),peer:peer.name,ok:false,pulled:0,pushed:0,ms:Date.now()-startedAt,message});}
@@ -268,7 +268,7 @@ export function createSyncService({
       if(isEditingElsewhere(event.sender,nodeId))throw Error(t('请先保存并关闭这张卡片的独立编辑窗口。'));
       return call('syncChooseContent',{nodeId,heads,selected});
     });
-    // 1.193：冲突处理里直接删除这张卡片（写删除版本 + 进垃圾桶），不再要求先选某一版。
+    // 冲突处理里直接删除这张卡片（写删除版本 + 进垃圾桶），不再要求先选某一版。
     ipcMain.handle('sync:discard-content',async(event,nodeId:unknown)=>{
       if(!contentSync||!canHandleConflicts(event.sender)||typeof nodeId!=='string'||!nodeId)throw Error(t('无效的冲突处理。'));
       if(isEditingElsewhere(event.sender,nodeId))throw Error(t('请先保存并关闭这张卡片的独立编辑窗口。'));
@@ -280,7 +280,7 @@ export function createSyncService({
       const started=Date.now();
       try{
         const reply=await syncPeerPost(address,syncPassphrase)('/sync/health',{},AbortSignal.timeout(5000));
-        // 1.211 改名后对端可能还是旧名字，两种都认
+        // 同步对端可使用旧应用名称。
   if(!['kasaneri','leafloop','IncrementalReading'].includes(reply?.app)||!Number.isFinite(reply.now))
           return {ok:false,message:t('对端返回了无效响应。')};
         const duration=Date.now()-started;
@@ -305,12 +305,12 @@ export function createSyncService({
   }
 
   async function loadSettings(){
-    // 1.9：恢复上次的同步设置并启动监听；每 60 秒跑一轮对等同步。
+    // 恢复上次的同步设置并启动监听；每 60 秒跑一轮对等同步。
     const saved=await call<{enabled?:boolean;port?:number;peers?:unknown}>('settingGet',{key:'syncSettings'});
     if(saved){syncConfig={enabled:!!saved.enabled,port:saved.port||38641,peers:normalizePeers(saved.peers)};}
-    // 1.110：设备名（可在设置里改，缺省用主机名）
+    // 设备名（可在设置里改，缺省用主机名）
     try{const savedName=await call<string|null>('settingGet',{key:'syncDeviceName'});if(savedName)syncDeviceName=String(savedName);}catch{}
-    // 1.78：把上次保存的口令恢复回来，否则重启后所有对端都会 401
+    // 把上次保存的口令恢复回来，否则重启后所有对端都会 401
     try{const secret=await call<{pass?:string}|null>('settingGet',{key:'syncSecret'});
       if(secret?.pass)syncPassphrase=Buffer.from(secret.pass,'base64').toString('utf8');}catch{}
     await startSyncServer();

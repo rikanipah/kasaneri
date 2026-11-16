@@ -1,6 +1,6 @@
 import type {Repository} from '../database';
 
-// 1.191：卡片内容同步表原先在 ContentJournal 构造器里临时建，这里搬进正式迁移（schema 12）。
+// 卡片内容同步表原先在 ContentJournal 构造器里临时建，这里搬进正式迁移（schema 12）。
 // sync_content_versions.created_at 记录版本首次入库时间（毫秒）；Anki 式合并按它挑较新的版本，
 // 两边算出的赢家一致，合并结果才会收敛。
 export function migrateContentSync(repository:Repository):void{

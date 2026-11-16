@@ -77,7 +77,7 @@ export class CardRelations {
     const parent=this.repository.getNode(id);
     if(!parent||parent.kind==='folder'||!parent.folderId)throw Error(t('卡片或所属文件夹不存在。'));
     if(typeof title!=='string'||!title.trim())throw Error(t('名称不能为空。'));
-    // 1.165：记忆子卡直接挂在父卡下面（目录树里像记忆树那样体现归属）；1.205 起主题/提取也支持，子卡沿用父卡类型。
+    // 记忆子卡直接挂在父卡下面（目录树里像记忆树那样体现归属）；主题/提取也支持，子卡沿用父卡类型。
     return this.repository.create({parentId:id,kind:kind??parent.kind,title},node=>{
       this.insert({parentId:id,childId:node.id,kind:'memory'});
     });

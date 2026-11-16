@@ -33,13 +33,13 @@ const statistics=new StatisticsDialog(request,change=>{
 const trash=new TrashDialog(request,()=>void enqueue(refreshRelations));
 function shortcutKey(id:CommandId):string{try{return configuration?.shortcuts?.[id]||'';}catch{return '';}}
 function shortcutTitle(label:string,id:CommandId):string{const key=shortcutKey(id),text=t(label);return key?t('{0}（快捷键 {1}）',text,key):text;}
-// 1.80（N3）：卡片状态徽标（右上角小字），替代此前的顶部提示
+// 卡片状态徽标（右上角小字），替代此前的顶部提示
 function applyCardBadge():void{
   const badge=document.getElementById('card-state-badge');
   if(!badge)return;
   const id=current?.note.id;
   const flags=id?cardFlags.get(id):undefined;
-  // 1.202：状态口径——搁置/完成/留存判定优先；检测卡复习停了但有待办历史（含 Anki 暂停）叫「待办暂停」，
+  // 状态口径——搁置/完成/留存判定优先；检测卡复习停了但有待办历史（含 Anki 暂停）叫「待办暂停」，
   // 新建还没复习过的检测卡在待办里叫「待办中」；主题/提取待办停用叫「已搁置」；点「完成」叫「已完成」。
   const isCard=current?.note.kind==='cloze';
   if(flags?.hold){badge.hidden=false;badge.textContent=t('留存判定');badge.title=t('留存判定：暂存点，可在浏览卡片里取消或删除');return;}
@@ -56,7 +56,7 @@ function applyCardBadge():void{
   badge.hidden=true;badge.textContent='';
 }
 const cardFlags=new Map<string,{enabled?:boolean;reviewEnabled?:boolean;pushEnabled?:boolean;buried?:boolean;hold?:boolean;reviewed?:boolean;dismissed?:boolean}>();
-// 1.6 ⑧：内嵌终端（每卡片一个对话框，PTY 生命周期由对话框管理）。
+// 内嵌终端（每卡片一个对话框，PTY 生命周期由对话框管理）。
 const terminal=new TerminalDialog();
 async function openCardInfo(id:string){try{await enqueue(save);await statistics.openCard(id);}catch(error){message((error as Error).message);}}
 async function openStatistics(folderId?:string){try{await enqueue(save);await statistics.openOverview(folderId);}catch(error){message((error as Error).message);}}
@@ -84,14 +84,14 @@ let studyBusy=false;
 let studyEditing=false;
 let directoryCollapsed=false;
 let browserOrigin:string|null=null;
-// 1.26：独立编辑窗口（?card=<id>）——只显示这一张卡，隐藏目录树/功能栏。
+// 独立编辑窗口（?card=<id>）——只显示这一张卡，隐藏目录树/功能栏。
 const soloCard=new URLSearchParams(location.search).get('card');
-// 1.133：独立浏览窗口（?browser=1）与独立添加卡片窗口（?add=1）
+// 独立浏览窗口（?browser=1）与独立添加卡片窗口（?add=1）
 const soloBrowser=new URLSearchParams(location.search).get('browser')==='1';
 const soloAdd=new URLSearchParams(location.search).get('add')==='1';
 const soloAddFolder=new URLSearchParams(location.search).get('folderId');
 const soloBrowseStatus=new URLSearchParams(location.search).get('status')==='conflict'?'conflict' as const:undefined;
-// 1.137：主窗口会带上目录树当前选中的卡片，浏览窗口打开时默认选中它
+// 主窗口会带上目录树当前选中的卡片，浏览窗口打开时默认选中它
 const soloBrowseCard=new URLSearchParams(location.search).get('select');
 const soloWindow=soloBrowser||soloAdd;
 let directoryTypes:TreeType[]=[];
@@ -106,7 +106,7 @@ function cardPresentation(draft:Draft){
 for(const [id,name] of Object.entries({'toggle-directory':'panel-right-close','toggle-review':'play','toggle-reading':'book-open','open-browser':'panels-top-left','open-add-card':'square-plus','open-shortcuts':'keyboard','open-settings':'settings',minimize:'minus',maximize:'maximize-2',close:'x'}))setIcon($(id),name as IconName);
 
 let noticeTimer:ReturnType<typeof setTimeout>|undefined;
-// 1.81（N14）：提示显示在工作区右上角，3.5 秒后自动消失（避免长期占位）
+// 提示显示在工作区右上角，3.5 秒后自动消失（避免长期占位）
 function message(text:string):void{$('notice').textContent=text;$('notice').hidden=!text;
   if(noticeTimer)clearTimeout(noticeTimer);
   if(text)noticeTimer=setTimeout(()=>{$('notice').hidden=true;$('notice').textContent='';},3500);}
@@ -200,7 +200,7 @@ function pruneDrafts():void{
     if(!entry)break;drafts.delete(entry);
   }
 }
-// 1.63：界面导航历史（Ctrl+Alt+←/→ 在打开过的卡片之间前后跳）
+// 界面导航历史（Ctrl+Alt+←/→ 在打开过的卡片之间前后跳）
 const navStack:string[]=[];let navIndex=-1;let navRestoring=false;
 async function open(id:string,source?:Anchor,force=false,treeScroll:'center'|'preserve'='center'):Promise<void>{
   await save();
@@ -235,14 +235,14 @@ async function mountEditor(note:Material,source:Anchor|undefined,treeScroll:'cen
   };
   draft.note=note;
   activeFolderId=note.folderId;
-  // 1.80（N3）：记录这张卡的复习/待办开关状态，用于右上角小字
+  // 记录这张卡的复习/待办开关状态，用于右上角小字
   void request<{enabled?:boolean;reviewEnabled?:boolean}|null>('nodeStudy',{id}).then(value=>{
     if(value)cardFlags.set(id,value);
     applyCardBadge();
   }).catch(()=>{});
   const anchors=await request<Array<{id:string;anchor:Anchor}>>('anchors',{id});
   highlights=await request('settingGet',{key:'highlights:'+id})||{extract:true,cloze:true};
-  // 1.138：检测卡的上下比例也要在清空工作区之前读好——否则清空后还要 await 一次，
+  // 检测卡的上下比例也要在清空工作区之前读好——否则清空后还要 await 一次，
   // 浏览器会先画一帧空白工作区，表现就是切换卡片时闪一下。
   const storedSplit=note.kind==='cloze'?(Number(await request('settingGet',{key:'cardSplit:'+note.id}))||50):50;
   disposeEditors();
@@ -254,14 +254,14 @@ async function mountEditor(note:Material,source:Anchor|undefined,treeScroll:'cen
     value:section==='answer'?draft.answer:draft.content,
     label:note.kind==='cloze'?(section==='answer'?t('答案'):t('检测内容')):t('笔记正文'),
     section,anchors:anchors.map(entry=>entry.anchor),highlights,textOnlyCursor:note.kind==='cloze',
-    // 1.12：复习（cards）里检测卡默认只读，点「编辑」解锁；待办（reading）里默认可直接编辑，
+    // 复习（cards）里检测卡默认只读，点「编辑」解锁；待办（reading）里默认可直接编辑，
     // 因为阅读材料时经常要顺手改字/补内容，不必先点编辑。
     readOnly:presentation.readOnly,
     audioAutoplay:!!configuration.settings.audioAutoplay,
     snapshot:section==='answer'?draft.answerState:draft.questionState,
     onChange:(value,typing)=>changed(draft,section,value,typing),
     onNavigate:target=>void enqueue(()=>open(target)),
-    // 1.66：重复高亮——同一段文字有多张卡片时弹出选择框
+    // 重复高亮——同一段文字有多张卡片时弹出选择框
     onNavigateChoice:(ids,at)=>void showLinkPicker(ids,at),
     onAttachmentMenu:showAttachmentMenu,
     onImageContext:(event,image)=>showImageMenu(draft,section,event,image),
@@ -272,15 +272,15 @@ async function mountEditor(note:Material,source:Anchor|undefined,treeScroll:'cen
     onError:message,
   });
   if(note.kind==='cloze'){
-    // 1.90：首帧隐藏——复习（检测卡）且答案未揭开时，创建 DOM 时就带上隐藏态，
+    // 首帧隐藏——复习（检测卡）且答案未揭开时，创建 DOM 时就带上隐藏态，
     // 不再等 applyStudyPresentation() 事后补类（那样中间的 await 会让浏览器先画一帧答案，造成闪烁）。
     const previewHidden=presentation.hideAnswer;
-    // 1.91：先把保存的比例读出来，再建 DOM——否则卡片先按 50/50 画一帧、再被改成保存值，会看到分隔条/文字跳一下
+    // 先把保存的比例读出来，再建 DOM——否则卡片先按 50/50 画一帧、再被改成保存值，会看到分隔条/文字跳一下
     const storedRatio=storedSplit;
     const card=document.createElement('div');card.className='test-card';
     card.classList.toggle('answer-collapsed',previewHidden);
     card.classList.toggle('is-mask-covered',presentation.coverMask);workspace.append(card);
-    // 1.79：所有检测卡默认上下 5:5（以前是 65:35）；用户拖动过的卡仍按各自保存值
+    // 所有检测卡默认上下 5:5（以前是 65:35）；用户拖动过的卡仍按各自保存值
     let ratio=storedRatio;
     const applySplit=()=>{
       ratio=Math.max(15,Math.min(85,ratio));
@@ -292,7 +292,7 @@ async function mountEditor(note:Material,source:Anchor|undefined,treeScroll:'cen
       const area=document.createElement('section');area.className='card-pane '+section;
       if(section==='answer')area.dataset.answerHint=t('点击「显示答案」或按空格后显示');
       const host=document.createElement('div');host.className='card-editor';
-      // 1.90：答案区首帧就带上隐藏态 + inert，避免内容先可见再被遮住（闪烁）
+      // 答案区首帧就带上隐藏态 + inert，避免内容先可见再被遮住（闪烁）
       if(section==='answer'&&previewHidden){area.classList.add('is-answer-hidden');host.inert=true;host.setAttribute('aria-hidden','true');}
       area.append(host);card.append(area);
       return make(host,section);
@@ -358,17 +358,17 @@ async function breadcrumbs(note:Material):Promise<void>{
     }
   }
 }
-// 1.169：卡片属性（标签）——底部状态栏右侧，可添加/移除，浏览卡片里能按属性检索
+// 卡片属性（标签）——底部状态栏右侧，可添加/移除，浏览卡片里能按属性检索
 const tagsPanel=$('card-tags-panel'),tagsList=$('card-tags-list'),tagsInput=$<HTMLInputElement>('card-tags-input');
 async function renderCardTags():Promise<void>{
   const id=current?.note.id;tagsList.replaceChildren();
   if(!id)return;
   const tags=await request<string[]>('cardTags',{id});
-  // 1.211：leech 后面带累计重来次数，看得出循环了几轮
+  // leech 后面带累计重来次数，看得出循环了几轮
   const leechCount=tags.includes('leech')?await request<number>('leechCount',{id}):0;
   for(const tag of tags){
     const chip=document.createElement('span');chip.className='card-tag';
-    // 1.210：内部标签显示中文（leech 保持原样），点 × 删的仍是原来的标签值
+    // 内部标签显示中文（leech 保持原样），点 × 删的仍是原来的标签值
     chip.textContent=tag==='leech'&&leechCount?tag+'('+leechCount+')':tagLabel(tag);chip.title=tag;
     const remove=document.createElement('button');remove.type='button';remove.textContent='×';remove.title=t('移除属性');
     remove.onclick=()=>void enqueue(async()=>{await request('removeCardTag',{id,tag});await renderCardTags();});
@@ -383,7 +383,7 @@ function toggleCardTags(show?:boolean):void{
 $('card-tags').onclick=event=>{event.stopPropagation();toggleCardTags();};
 tagsInput.onkeydown=event=>{
   if(event.key!=='Enter')return;event.preventDefault();
-  // 1.210：写「留存判定」「已搁置」等于写 hold / buried
+  // 写「留存判定」「已搁置」等于写 hold / buried
   const tag=tagFromLabel(tagsInput.value),id=current?.note.id;
   if(!tag||!id)return;
   tagsInput.value='';
@@ -392,7 +392,7 @@ tagsInput.onkeydown=event=>{
 document.addEventListener('pointerdown',event=>{
   if(!(event.target as HTMLElement).closest('#card-tags,#card-tags-panel'))tagsPanel.hidden=true;
 });
-/** 1.210：只刷新当前卡片的锚点高亮，不重新挂载编辑器（光标、滚动、选区都保留）。 */
+/** 只刷新当前卡片的锚点高亮，不重新挂载编辑器（光标、滚动、选区都保留）。 */
 async function refreshAnchors():Promise<void>{
   if(!current)return;
   const id=current.note.id;
@@ -409,7 +409,7 @@ async function createExcerpt(draft:Draft,section:'question'|'answer',kind:'extra
     if(current!==draft)return;
     await save();
     if((section==='answer'?draft.answer:draft.content)!==source)return;
-    // 1.196：Alt+S（选区生成检测卡）不再把新卡正文挖成 [...…]，而是整段原文照抄过去，
+    // Alt+S（选区生成检测卡）不再把新卡正文挖成 [...…]，而是整段原文照抄过去，
     // 选中的文字放进答案区；来源锚点仍保留，方便跳回原文。
     const selected=source.slice(from,to);
     const result=await request<{node:Material;undoable:boolean}>('create',{
@@ -420,11 +420,11 @@ async function createExcerpt(draft:Draft,section:'question'|'answer',kind:'extra
     recordCreation(result.node);
     await tree.refresh([draft.note.id]);
     await refreshCounts();
-    // 1.210：Alt+A / Alt+S / Alt+D 建完不再跳到新卡——接着读手头这张，只在原文上补锚点、
+    // Alt+A / Alt+S / Alt+D 建完不再跳到新卡——接着读手头这张，只在原文上补锚点、
     // 目录里多出一行。需要改新卡时，选中它右键或用「在目录树中定位」。
     message(kind==='blank'?t('已新建提取。'):kind==='cloze'?t('已生成检测卡。'):t('已摘录为提取。'));
     await refreshAnchors();
-    // 1.164：新建的提取/检测卡不再立刻进入重命名——标题跟随工作区正文自动生成，需要改名时右键或选中后 F12
+    // 新建的提取/检测卡不再立刻进入重命名——标题跟随工作区正文自动生成，需要改名时右键或选中后 F12
   });
 }
 const prompt=$<HTMLDialogElement>('prompt');
@@ -434,7 +434,7 @@ async function ask(heading:string,initial:string,description?:string):Promise<st
   const input=$<HTMLInputElement>('prompt-input');input.value=initial;input.hidden=!!description;input.required=!description;
   const accept=$<HTMLButtonElement>('prompt-accept');
   accept.textContent=description?t('删除'):t('确定');
-  // 1.210：回车提交。表单里第一个按钮是「取消」，浏览器的隐式提交会去点它，
+  // 回车提交。表单里第一个按钮是「取消」，浏览器的隐式提交会去点它，
   // 所以这里自己接住 Enter，直接触发「确定」；拼音选词时的回车不算。
   input.onkeydown=event=>{
     if(event.isComposing||event.key!=='Enter')return;
@@ -458,11 +458,11 @@ async function newNode(kind:'folder'|'topic'|'material'|'cloze',parentId:string|
     await tree.refresh([parentId]);
     if(kind==='folder'){activeFolderId=node.id;await tree.reveal(node.id);}else await open(node.id);
     await refreshCounts();applyStudyPresentation();
-    // 1.164：同上，新建主题/提取/检测卡不弹重命名；文件夹仍需命名
+    // 同上，新建主题/提取/检测卡不弹重命名；文件夹仍需命名
   });
 }
 
-// ===== 1.6 ⑦：从卡片启动外部程序/终端 =====
+// ===== 从卡片启动外部程序/终端 =====
 // 启动配置存在 nodes.metadata.launch={command,args?,cwd?}。
 // 运行本身由主进程执行（渲染层在沙盒里，见 main.ts 'reading:launch'）。
 async function loadLaunch(id:string):Promise<LaunchRequest|undefined>{
@@ -547,8 +547,8 @@ async function refreshMovedNode(id:string,previous:string|null,parentId:string|n
 }
 
 async function remove(node:TreeNode):Promise<void>{
-  // 1.121：删文件夹＝文件夹和里面所有内容一起进垃圾桶，恢复时整棵子树一起回来。
-  // 1.133：确认框可在「设置 → 删除」里关掉（默认关＝直接删，仍可用 Ctrl+Z 撤销或到垃圾桶恢复）
+  // 删文件夹＝文件夹和里面所有内容一起进垃圾桶，恢复时整棵子树一起回来。
+  // 确认框可在「设置 → 删除」里关掉（默认关＝直接删，仍可用 Ctrl+Z 撤销或到垃圾桶恢复）
   if(configuration.settings.confirmDelete){
     const confirmed=await ask(node.kind==='folder'?t('删除文件夹'):t('删除卡片'),'',
       t('删除「{0}」？{1}可撤销（Ctrl+Z）或到垃圾桶恢复。',node.title,node.hasChildren?t('里面的内容会一起进垃圾桶，恢复时整棵子树一起回来。'):''));
@@ -585,7 +585,7 @@ async function remove(node:TreeNode):Promise<void>{
     if(browser.visible)void browser.refresh();
   });
 }
-/** 1.69：仿 Obsidian「Move file」——屏幕中间弹出搜索框，输入过滤目录，回车移动。 */
+/** 仿 Obsidian「Move file」——屏幕中间弹出搜索框，输入过滤目录，回车移动。 */
 async function showMovePicker(node:TreeNode):Promise<void>{
   return chooseMoveFolder(parentId=>moveNode(node,parentId));
 }
@@ -607,7 +607,7 @@ async function chooseMoveFolder(move:(parentId:string)=>Promise<void>):Promise<v
   let cursor=0;
   const render=(keyword:string)=>{
     list.replaceChildren();
-    // 1.70：输入框支持用 / 逐级定位，例如输入 Anime/1 就匹配 Anime/1在看
+    // 输入框支持用 / 逐级定位，例如输入 Anime/1 就匹配 Anime/1在看
     const segments=keyword.split('/').map(part=>part.trim().toLowerCase()).filter(Boolean);
     const matches=folders.filter(folder=>{
       if(!segments.length)return true;
@@ -661,7 +661,7 @@ async function chooseMoveFolder(move:(parentId:string)=>Promise<void>):Promise<v
   render('');input.focus();
 }
 
-/** 1.71：Alt+F —— 在「文件管理」配置的默认文件夹里新建主题（没配置就用当前选中的文件夹）。 */
+/** Alt+F —— 在「文件管理」配置的默认文件夹里新建主题（没配置就用当前选中的文件夹）。 */
 async function newTopicInDefault():Promise<void>{
   let parentId:string|null=null;
   try{const saved=await request<{folderId?:string}|null>('settingGet',{key:'defaultTopicFolder'});parentId=saved?.folderId||null;}catch{}
@@ -799,9 +799,9 @@ function context(node:TreeNode|null,event:MouseEvent,inBrowser=false,extra:Array
     item('新建文件夹',()=>void newNode('folder',null));
   }else{
     item(shortcutTitle('修改显示名','rename'),()=>void rename(node),false,'修改显示名');
-    // 1.69：把卡片/文件夹移动到任意目录（居中搜索框，仿 Obsidian 的 Move file）
+    // 把卡片/文件夹移动到任意目录（居中搜索框，仿 Obsidian 的 Move file）
     item('移至…',()=>void showMovePicker(node));
-    // 1.210：目录树右键不再提供留存判定——它在工作区底部「更多」里（Shift+- 也能按）。
+    // 目录树右键不再提供留存判定——它在工作区底部「更多」里（Shift+- 也能按）。
     // 浏览卡片的右键菜单保留，那里是表格操作的习惯入口。
     if(inBrowser&&node.kind!=='folder')item('留存判定 / 取消',()=>void enqueue(async()=>{
       const state=await request<{hold?:boolean}|null>('nodeStudy',{id:node.id});
@@ -827,7 +827,7 @@ function context(node:TreeNode|null,event:MouseEvent,inBrowser=false,extra:Array
       item('新建提取',()=>void createChild('material'));
       item('新建检测卡',()=>void createChild('cloze'));
       for(const [label,action] of memoryActions(node.id,node.kind as 'topic'|'material'|'cloze'))item(label,action);
-      // 1.7 ④：SM 术语——topic=主题，material=提取（extract），cloze=检测卡。
+      // SM 术语——topic=主题，material=提取（extract），cloze=检测卡。
       for(const [kind,label] of [['topic',t('主题')],['material',t('提取')],['cloze',t('检测卡')]] as const)if(node.kind!==kind)item('转换为'+label,()=>void enqueue(async()=>{
         await save();await request('changeKind',{id:node.id,kind});await tree.refresh([node.parentId]);
         if(current?.note.id===node.id)await open(node.id,undefined,true);if(browser.visible)void browser.refresh();
@@ -873,14 +873,14 @@ function context(node:TreeNode|null,event:MouseEvent,inBrowser=false,extra:Array
         await refresh();
         message(t('已重置为新卡，可按 Ctrl+Z 撤销。'));
       }));
-      // —— 1.6 ⑦：启动外部程序/终端。菜单项同步创建占位，异步拿到 metadata 后改文案/显隐，
+      // —— 启动外部程序/终端。菜单项同步创建占位，异步拿到 metadata 后改文案/显隐，
       // 保证"运行启动命令"始终排在"设置启动命令"前面，不被异步打乱顺序。——
       const launchRun=item('运行启动命令',()=>void launchCurrent(node.id));launchRun.hidden=true;
       const launchSet=item('设置启动命令…',()=>void setLaunch(node.id));
       void loadLaunch(node.id).then(launch=>{launchRun.hidden=!launch;launchSet.textContent=launch?t('修改启动命令…'):t('设置启动命令…');});
-      // —— 1.6 ⑧：内嵌终端。cwd 取卡片 launch 配置的工作目录，缺省为主进程的程序数据目录。——
+      // —— 内嵌终端。cwd 取卡片 launch 配置的工作目录，缺省为主进程的程序数据目录。——
       item('内嵌终端',()=>void enqueue(async()=>{const launch=await loadLaunch(node.id);terminal.open(launch?.cwd);}));
-      // 1.27：按用户要求去掉「返回父卡与摘录来源」（目录树本身可以导航，菜单不必再占一项）。
+      // 去掉「返回父卡与摘录来源」（目录树本身可以导航，菜单不必再占一项）。
       let state={enabled:true,reviewEnabled:false,pushEnabled:true};
       const toggle=item(node.kind==='cloze'?'加入复习':'搁置',()=>void enqueue(async()=>{
         await save();await request('setStudyEnabled',{id:node.id,enabled:node.kind==='cloze'?!state.reviewEnabled:!state.pushEnabled});await refreshCounts();
@@ -892,14 +892,14 @@ function context(node:TreeNode|null,event:MouseEvent,inBrowser=false,extra:Array
       if(push)push.dataset.action='搁置／恢复待办';
       void request<typeof state>('nodeStudy',{id:node.id}).then(value=>{if(value){state=value;toggle.textContent=node.kind==='cloze'?(state.reviewEnabled?t('暂停复习'):t('加入复习')):(state.pushEnabled?t('搁置'):t('恢复待办'));if(push){push.hidden=state.reviewEnabled;push.textContent=state.pushEnabled?t('搁置'):t('恢复待办');}}});
     }
-    // 1.191：场景相关的额外项（浏览卡片里的「冲突文件…」等）
+    // 场景相关的额外项（浏览卡片里的「冲突文件…」等）
     for(const [label,action] of extra)item(label,action);
     menu.append(document.createElement('hr'));
     item(node.kind==='folder'?'删除文件夹':'删除卡片',()=>void remove(node),true);
   }
   if(arrangeContextMenu(menu,inBrowser?'browser':node?.kind??'blank'))positionContextMenu(menu, event);else menu.hidden=true;
 }
-/** 1.191：浏览卡片里右键垃圾桶中的卡片（冲突筛选会显示它们）。给「冲突文件…」和「恢复卡片」。 */
+/** 浏览卡片里右键垃圾桶中的卡片（冲突筛选会显示它们）。给「冲突文件…」和「恢复卡片」。 */
 function browserTrashContext(row:{id:string;kind:NodeKind;deletedAt:string|null},event:MouseEvent):void{
   const menu=$('context-menu');menu.replaceChildren();
   const item=(text:string,action:()=>void)=>{const button=document.createElement('button');button.textContent=t(text);button.dataset.action=text;
@@ -926,7 +926,7 @@ const tree=new DirectoryTree($('tree'),{
   move:(node,parentId)=>void enqueue(()=>moveNode(node,parentId)),
   deselect:()=>{activeFolderId=null;},
 });
-// 1.61：按住 Ctrl（macOS Cmd）时给 body 打 ctrl-down，让摘录高亮显示成"可点链接"的指针，
+// 按住 Ctrl（macOS Cmd）时给 body 打 ctrl-down，让摘录高亮显示成"可点链接"的指针，
 // 用户一眼就能看出 Ctrl 是否生效；松开或窗口失焦立即还原。
 document.addEventListener('keydown',event=>{
   if(event.key==='Control'||event.key==='Meta')document.body.classList.add('ctrl-down');
@@ -942,7 +942,7 @@ document.addEventListener('mousemove',event=>{
 document.addEventListener('pointerdown',event=>{
   if(!(event.target as HTMLElement).closest('#context-menu'))$('context-menu').hidden=true;
   if(!(event.target as HTMLElement).closest('#study-more,#study-more-menu'))hideStudyMenu();
-  // 1.157：点重来菜单以外的地方就收起它
+  // 点重来菜单以外的地方就收起它
   if(againMenu&&!(event.target as HTMLElement).closest('#again-menu,#study-buttons'))closeAgainMenu();
 });
 function focusedEditor(){
@@ -950,7 +950,7 @@ function focusedEditor(){
   if(editors?.question.view.hasFocus)return {editor:editors.question,section:'question' as const};
   return null;
 }
-// ===== 1.7 ③：阅读点。字符偏移存 reading_state.reading_position。=====
+// ===== 阅读点。字符偏移存 reading_state.reading_position。=====
 // 取当前阅读位置：编辑器有焦点用光标偏移，否则用视口首行行首。
 function currentReadingPosition():number{
   const view=editors?.question?.view;if(!view)return 0;
@@ -984,13 +984,13 @@ document.addEventListener('keydown',event=>{
   const editable=(event.target as Element)?.closest('input,textarea,[contenteditable="true"]');
   const command=matching.find(candidate=>{
     if(candidate.scope==='editor')return !!focusedEditor();
-    // 1.82：编辑键（默认 E）在编辑态也要可用，否则按进去就出不来了；其余 card 快捷键仍禁止
+    // 编辑键（默认 E）在编辑态也要可用，否则按进去就出不来了；其余 card 快捷键仍禁止
     if(candidate.scope==='card'){
       if(candidate.id==='editCard')return !!study&&isActual&&(study.item?.kind==='fsrs'||study.item?.kind==='reading');
       return !!study&&isActual&&study.item?.kind==='fsrs'&&!studyEditing;
     }
     if(candidate.scope==='reading')return !!study&&isActual&&study.item?.kind==='reading'&&(!editable||key.includes('+'));
-    // 1.182：搁置只在复习/待办中（非编辑态）触发
+    // 搁置只在复习/待办中（非编辑态）触发
     if(candidate.id==='buryCard')return !!study&&isActual&&!studyEditing&&!editable;
     if(candidate.id==='undoReview')return false;
     return true;
@@ -1005,7 +1005,7 @@ document.addEventListener('keydown',event=>{
   }else if(action==='toggleReview')void enqueue(toggleStudy);
   else if(action==='toggleReading')void enqueue(()=>toggleStudy('reading'));
   else if(action==='toggleDirectory')toggleDirectory();
-  // 1.133：浏览卡片改为独立窗口——主窗口的工作区、滚动位置与未保存草稿都不受影响
+  // 浏览卡片改为独立窗口——主窗口的工作区、滚动位置与未保存草稿都不受影响
   else if(action==='browse')void window.reading.openBrowserWindow(undefined,current?.note.id||null).catch(()=>{});
   else if(action==='showAnswer')revealAnswer();
   else if(['again','hard','good','easy'].includes(action)){if(answerShown)gradeStudy({rating:({again:1,hard:2,good:3,easy:4} as any)[action]});}
@@ -1030,7 +1030,7 @@ document.addEventListener('keydown',event=>{
   else if(action==='rename'){const node=tree.selectedNode()||current?.note;if(node)void rename(node);}
   else if(action==='settings'||action==='shortcuts')void openPreferences(action);
 },true);
-// 1.170：点击/编辑工作区时，把目录树和记忆树都聚焦到当前这张卡
+// 点击/编辑工作区时，把目录树和记忆树都聚焦到当前这张卡
 let treeSyncFrame=0;
 $('workspace').addEventListener('pointerdown',()=>{
   const id=current?.note.id;
@@ -1077,7 +1077,7 @@ $('resize').onpointerdown=event=>{
   };
 };
 $('minimize').onclick=()=>window.reading.windowAction('minimize');
-// 1.178：niri 等 Wayland 平铺合成器不支持最小化，点击会卡住窗口——Linux 上直接隐藏该按钮
+// niri 等 Wayland 平铺合成器不支持最小化，点击会卡住窗口——Linux 上直接隐藏该按钮
 if(window.reading.platform==='linux')$('minimize').hidden=true;
 $('maximize').onclick=()=>window.reading.windowAction('maximize');
 $('close').onclick=()=>window.reading.windowAction('close');
@@ -1091,7 +1091,7 @@ window.reading.onCloseRequested(()=>{
       if(!soloCard&&!soloWindow){
         await browser.flushEdit();
         const lastId=current?.note.id||null;
-        // 1.200：本机聚焦的卡片写进 state/ui-state.json（每台机器独立），数据库里的 lastNode 只作旧版迁移。
+        // 本机聚焦的卡片写进 state/ui-state.json（每台机器独立），数据库里的 lastNode 只作旧版迁移。
         await request('settingSet',{key:'lastNode',value:lastId});
         void window.reading.uiStateSet('lastNode',lastId).catch(()=>{});
       }
@@ -1105,7 +1105,7 @@ window.reading.onCloseRequested(()=>{
 window.addEventListener('error',event=>message(event.message));
 window.addEventListener('unhandledrejection',event=>message(String(event.reason?.message||event.reason)));
 
-/** 1.65：当同一处高亮对应多张卡片时，在鼠标位置弹出一个小选择框。 */
+/** 当同一处高亮对应多张卡片时，在鼠标位置弹出一个小选择框。 */
 async function showLinkPicker(ids:string[],at:{x:number;y:number}):Promise<void>{
   document.getElementById('link-picker')?.remove();
   const box=document.createElement('div');box.id='link-picker';box.setAttribute('role','menu');
@@ -1155,13 +1155,13 @@ async function refreshPrerequisiteQueues(){
 }
 function emptyWorkspace(text:string){disposeEditors();current=null;void relationsPanel.show(null);window.reading.setEditorCard('workspace',null);$('workspace').replaceChildren();const empty=document.createElement('div');empty.className='empty';empty.textContent=text;$('workspace').append(empty);$('breadcrumbs').replaceChildren();renderStudyControls();}
 function applyStudyPresentation(){
-  // 1.50：复习（检测卡）时答案默认不显示——只认"当前处于复习模式 + 是检测卡"，
+  // 复习（检测卡）时答案默认不显示——只认"当前处于复习模式 + 是检测卡"，
   // 不再依赖卡片是否已加载完成（此前异步打开时空档期会把答案露出来）。
   const answer=$('workspace').querySelector<HTMLElement>('.card-pane.answer');
   if(answer&&current){
     const {hideAnswer:hidden,coverMask}=cardPresentation(current);
     answer.classList.toggle('is-answer-hidden',hidden);const host=answer.querySelector<HTMLElement>('.card-editor');if(host){host.inert=hidden;host.setAttribute('aria-hidden',String(hidden));}
-    // 1.89：答案未揭开时，**整个下半区（含分隔条与提示文字）都不显示**，题目占满全高；
+    // 答案未揭开时，**整个下半区（含分隔条与提示文字）都不显示**，题目占满全高；
     // 点「显示答案」后才恢复上下分区。此前只是隐藏编辑器、留着空面板和提示，用户觉得不该出现。
     const card=answer.closest<HTMLElement>('.test-card');
     card?.classList.toggle('answer-collapsed',hidden);
@@ -1169,7 +1169,7 @@ function applyStudyPresentation(){
   }
   renderStudyToggles(study,shortcutTitle);
   renderStudyControls();
-  // 1.80（N5）：侧栏与更多菜单的快捷键提示（统一从 configuration.shortcuts 反查）
+  // 侧栏与更多菜单的快捷键提示（统一从 configuration.shortcuts 反查）
   const hint=(elementId:string,label:string,commandId:CommandId)=>{
     const element=document.getElementById(elementId);if(!element)return;
     element.setAttribute('title',shortcutTitle(label,commandId));
@@ -1178,12 +1178,12 @@ function applyStudyPresentation(){
   hint('open-settings',t('设置'),'settings');hint('toggle-directory',t('目录树'),'toggleDirectory');
   hint('study-undo',t('撤销上次'),'undoReview');hint('study-pause',t('留存判定'),'stopCard');
   hint('study-pause-review',t('待办暂停'),'pauseReview');
-  // 1.133：「只暂停复习」只在复习（检测卡）模式出现；「返回阅读」已按用户要求移除
+  // 「只暂停复习」只在复习（检测卡）模式出现；「返回阅读」已移除
   const reviewOnly=['study-pause-review'];
   for(const id of reviewOnly){const element=document.getElementById(id) as HTMLButtonElement|null;if(element)element.hidden=study?.item?.kind!=='fsrs';}
-  // 1.181：留存判定对所有卡片都可选（检测卡与非检测卡）
+  // 留存判定对所有卡片都可选（检测卡与非检测卡）
   {const element=document.getElementById('study-pause') as HTMLButtonElement|null;if(element)element.hidden=false;}
-  // 1.104：菜单项右侧显示快捷键名（用户要求"选项旁边写快捷键名字"）
+  // 菜单项右侧显示快捷键名
   const menuKey=(id:string,commandId:CommandId)=>{
     const element=document.getElementById(id) as HTMLButtonElement|null;if(!element)return;
     const key=shortcutKey(commandId);element.querySelector('.menu-shortcut')?.remove();
@@ -1191,7 +1191,7 @@ function applyStudyPresentation(){
   };
   menuKey('study-pause','stopCard');menuKey('study-pause-review','pauseReview');
   menuKey('study-undo','undoReview');hint('study-edit',t('编辑'),'editCard');
-  // 1.80（N3）：右上角小字替代顶部提示
+  // 右上角小字替代顶部提示
   applyCardBadge();
 }
 function renderStudyControls(){
@@ -1214,12 +1214,12 @@ async function presentStudy(){
   if(!study)return;answerShown=false;studyEditing=false;hideStudyMenu();
   if(study.item)await open(study.item.id,undefined,true);
   else emptyWorkspace(study.folderId?t('「{0}」当前没有到期检测卡。',study.folderTitle):t('当前没有到期卡片。可以继续编辑材料，或等待下一次学习步骤。'));
-  // 1.7 ③：恢复阅读点（只对材料卡；打开后再滚动，避免被 open 的重置覆盖）。
+  // 恢复阅读点（只对材料卡；打开后再滚动，避免被 open 的重置覆盖）。
   if(study.item?.kind==='reading'){
     const state=await request<{readingPosition?:number}|null>('nodeStudy',{id:study.item.id});
     if(state?.readingPosition)scrollEditorTo(state.readingPosition);
   }
-  // 1.7 ②：auto-postpone 提示（放 open 之后，避免被清空）。
+  // auto-postpone 提示（放 open 之后，避免被清空）。
   if(study.postponed)message(t('待办积压超出上限，已自动延后 {0} 项低优先级材料。',study.postponed));
   applyStudyPresentation();await refreshCounts();
 }
@@ -1242,7 +1242,7 @@ function ratingAvailable(rating?:number):boolean{
   if(rating===4)return configuration.settings.showEasyRating;
   return true;
 }
-// 1.157：重来目标选择——在「重来」按钮上方弹一个小菜单，勾选子卡后再按一次 1 确认
+// 重来目标选择——在「重来」按钮上方弹一个小菜单，勾选子卡后再按一次 1 确认
 let againMenu:{choices:AgainChildCandidate[];selected:Set<string>}|null=null;
 function closeAgainMenu(){document.getElementById('again-menu')?.remove();againMenu=null;}
 function openAgainMenu(choices:AgainChildCandidate[]){
@@ -1272,7 +1272,7 @@ function confirmAgainMenu(){
 function gradeStudy(input:StudyAnswer&{againChildren?:AgainChildSelection[]}){
   if(studyBusy||studyEditing||!study?.item||study.item.id!==current?.note.id)return;
   if(study.item.kind==='fsrs'&&(!answerShown||!ratingAvailable(input.rating)))return;
-  // 1.157：重来小菜单开着时，再按一次「重来」（或快捷键 1）= 确认所选子卡一起重来
+  // 重来小菜单开着时，再按一次「重来」（或快捷键 1）= 确认所选子卡一起重来
   if(input.rating===1&&againMenu){confirmAgainMenu();return;}
   const snapshot=study,item=study.item;studyBusy=true;renderStudyControls();
   void enqueue(async()=>{
@@ -1283,12 +1283,12 @@ function gradeStudy(input:StudyAnswer&{againChildren?:AgainChildSelection[]}){
       if(item.kind==='fsrs'&&input.rating===1&&!againChildren){
         const choices=await request<AgainChildCandidate[]>('reviewAgainDependents',submission);
         if(choices.length){
-          // 1.157：不弹对话框，改为在「重来」按钮上方弹小菜单；勾选后再按 1 确认
+          // 不弹对话框，改为在「重来」按钮上方弹小菜单；勾选后再按 1 确认
           openAgainMenu(choices);
           return;
         }
       }
-      // 1.12：阅读点随评分请求一起提交（不能单独发 setReadingPosition——它会让
+      // 阅读点随评分请求一起提交（不能单独发 setReadingPosition——它会让
       // reading_state.revision+1，随后评分校验判定"复习状态已改变，请刷新"）。
       const position=item.kind==='reading'?currentReadingPosition():undefined;
       study=await request<StudySnapshot>('reviewGrade',{...submission,...input,againChildren,...(position===undefined?{}:{position})});
@@ -1302,7 +1302,7 @@ function gradeStudy(input:StudyAnswer&{againChildren?:AgainChildSelection[]}){
         }});
       }
       await presentStudy();
-      // 1.181：leech 自动进入待办暂停时给个短暂提示
+      // leech 自动进入待办暂停时给个短暂提示
       if(item.kind==='fsrs'&&input.rating){
         const state=await request<{reviewEnabled?:boolean;pushEnabled?:boolean}|null>('nodeStudy',{id:item.id});
         if(state&&state.reviewEnabled===false&&state.pushEnabled===true)flashCardNotice(t('上张卡片已进入待办暂停'));
@@ -1325,7 +1325,7 @@ const browser=new CardBrowser($('card-browser'),$('browser-rule'),$('browser-fil
   run:enqueue,
   beforeOpen:async()=>{await save();if(study)await stopStudy();browserOrigin=current?.note.id||null;},
   beforeQuery:save,
-  // 1.26：单击只选中（不再在下方打开编辑区），双击才在新窗口里编辑这张卡。
+  // 单击只选中（不再在下方打开编辑区），双击才在新窗口里编辑这张卡。
   select:async id=>{if(!id)emptyWorkspace(t('没有匹配的卡片。'));},
   openWindow:id=>void request('cardWindow',{id}).catch(()=>{}),
   setEnabled:async(ids,enabled)=>{
@@ -1367,7 +1367,7 @@ const browser=new CardBrowser($('card-browser'),$('browser-rule'),$('browser-fil
       if(note)targets.push(note);
     }
     if(!targets.length)return;
-    // 1.194：父子卡片一起选中时只删最上层——删除会级联整棵子树，撤销也按批次整棵恢复，
+    // 父子卡片一起选中时只删最上层——删除会级联整棵子树，撤销也按批次整棵恢复，
     // 否则先删子再删父，撤销会把子卡片恢复到默认文件夹里。
     const selected=new Set(targets.map(note=>note.id));
     const roots:Material[]=[];
@@ -1445,16 +1445,16 @@ const browser=new CardBrowser($('card-browser'),$('browser-rule'),$('browser-fil
     await refreshCounts();
   },
   closed:async()=>{if(soloBrowser){window.reading.closeCardWindow();return;}if(!current&&browserOrigin&&await request('get',{id:browserOrigin}))await open(browserOrigin);browserOrigin=null;},
-  // 1.133：独立浏览窗口里的按钮是「关窗」，不是「回到编辑」
+  // 独立浏览窗口里的按钮是「关窗」，不是「回到编辑」
   closeLabel:soloBrowser?t('关闭窗口'):t('回到编辑'),
   visibility:visible=>{document.body.classList.toggle('browser-open',visible);$('open-browser').classList.toggle('is-active',visible);$('open-browser').setAttribute('aria-pressed',String(visible));applyDirectory();},
 });
 window.reading.onSyncedContent((applied,parentId,nodeId)=>void enqueue(async()=>{
   if(soloCard||soloWindow)return;
   if(applied){
-    // 1.136：只刷新新卡所在的那一支，避免整棵树重建把工作区闪一下
+    // 只刷新新卡所在的那一支，避免整棵树重建把工作区闪一下
     if(parentId)await tree.refresh([parentId]);else await tree.reset();
-    // 1.183：子窗口新建的卡片也要能 Ctrl+Z 撤销
+    // 子窗口新建的卡片也要能 Ctrl+Z 撤销
     if(nodeId){const created=await request<Material|null>('get',{id:nodeId});if(created)recordCreation(created);}
     await refreshCounts();await refreshRelations();
   }
@@ -1474,7 +1474,7 @@ function hideStudyMenu(){$('study-more-menu').hidden=true;$('study-more').setAtt
 async function toggleStudyEditing(){
   if(studyBusy||!study?.item||study.item.id!==current?.note.id)return;
   await save();
-  // 1.199：待办里的材料本来就能编辑——按钮/Alt+E 直接打开当前材料并聚焦编辑区。
+  // 待办里的材料本来就能编辑——按钮/Alt+E 直接打开当前材料并聚焦编辑区。
   if(study.item.kind==='reading'){await open(study.item.id,undefined,true);return;}
   studyEditing=!studyEditing;
   if(studyEditing){answerShown=true;await open(study.item.id,undefined,true);}
@@ -1484,7 +1484,7 @@ async function toggleStudyEditing(){
   }
 }
 function applyConfiguration(){fontSize=configuration.settings.fontSize;document.documentElement.style.setProperty('--text-size',fontSize+'px');document.documentElement.dataset.theme=configuration.settings.theme;applyCustomCss(configuration.settings.customCss);}
-/** 1.176：外观自定义 CSS——写进一个 <style>，留空则移除。 */
+/** 外观自定义 CSS——写进一个 <style>，留空则移除。 */
 function applyCustomCss(css:string|undefined){
   const text=(css||'').trim();
   let style=document.getElementById('custom-css') as HTMLStyleElement|null;
@@ -1494,20 +1494,20 @@ function applyCustomCss(css:string|undefined){
 }
 async function openPreferences(tab:PreferenceTab|'settings'){await enqueue(save);preferences.open(tab==='settings'?'general':tab,configuration,tree.selectedNode()||current?.note||null);}
 async function openDeckSettings(folderId:string){await enqueue(save);preferences.openDeck(await request<DeckConfiguration>('deckConfig',{folderId}),configuration);}
-// 1.205：工具栏的复习/待办/统计按目录树当前聚焦的牌组打开；聚焦的是卡片就用它所属的文件夹。
+// 工具栏的复习/待办/统计按目录树当前聚焦的牌组打开；聚焦的是卡片就用它所属的文件夹。
 const focusedDeck=()=>activeFolderId||undefined;
 $('toggle-review').onclick=()=>void enqueue(()=>toggleStudy('cards',focusedDeck()));
 $('toggle-reading').onclick=()=>void enqueue(()=>toggleStudy('reading',focusedDeck()));
 $('toggle-directory').onclick=toggleDirectory;
 $('open-browser').onclick=()=>void window.reading.openBrowserWindow(undefined,tree.selectedNode()?.id||current?.note.id||null).catch(()=>{});
-// 1.133：功能栏「添加卡片」——与 Ctrl+Shift+N 同一条路径，带上当前文件夹
+// 功能栏「添加卡片」——与 Ctrl+Shift+N 同一条路径，带上当前文件夹
 $('open-add-card').onclick=()=>void window.reading.openAddCardWindow(activeFolderId||current?.note.folderId||null).catch(()=>{});
 $('open-statistics').onclick=()=>void openStatistics(focusedDeck());
 $('open-trash').onclick=()=>void trash.open();
 $('open-settings').onclick=()=>void openPreferences('settings');
 $('open-shortcuts').onclick=()=>void openPreferences('shortcuts');
 
-// 1.181：更多菜单里的三个状态
+// 更多菜单里的三个状态
 // - 待办暂停（原「只停复习」）：暂停复习，卡片进入待办继续读；leech 会自动进入这个状态
 // - 留存判定：不确定要不要留在 IR 时收进暂存点（复习/待办都停），之后可在浏览卡片取消或删除
 // - 搁置到明天：只把到期日推到下一个日切点
@@ -1519,7 +1519,7 @@ function flashCardNotice(text:string):void{
   document.body.append(notice);
   setTimeout(()=>notice.remove(),3200);
 }
-// 1.182：搁置（菜单项与快捷键 `=` 共用）
+// 搁置（菜单项与快捷键 `=` 共用）
 function buryCurrent():void{
   const id=study?.item?.id||current?.note.id;
   if(!id)return;
@@ -1553,7 +1553,7 @@ function pauseCard():void{void enqueue(async()=>{
 });}
 $('study-pause').onclick=pauseCard;
 $('study-pause').onclick=pauseCard;
-// 1.133：「只停复习」只把卡片移出复习队列，仍留在待办里
+// 「只停复习」只把卡片移出复习队列，仍留在待办里
 function pauseReview():void{void enqueue(async()=>{
   hideStudyMenu();
   if(!study?.item||study.item.kind!=='fsrs')return;
@@ -1567,7 +1567,7 @@ function pauseReview():void{void enqueue(async()=>{
   flashCardNotice(t('上张卡片已进入待办暂停'));
   message(t('已进入待办暂停：暂停复习，卡片仍留在待办里继续读。'));
 });}$('study-pause-review').onclick=pauseReview;
-// 1.180：搁置到明天（只对检测卡有意义）
+// 搁置到明天（只对检测卡有意义）
 $('study-bury').onclick=()=>{
   const id=current?.note.id;
   if(!id)return;
@@ -1582,7 +1582,7 @@ $('study-bury').onclick=()=>{
   });
 };
 $('study-undo').onclick=undoLatest;
-// 1.32：优先级弹窗——显示当前值，输入 0–9 后回车保存（ask 的输入框在表单里，回车即提交）。
+// 优先级弹窗——显示当前值，输入 0–9 后回车保存（ask 的输入框在表单里，回车即提交）。
 $('study-priority').onclick=()=>void enqueue(async()=>{
   if(!study?.item||study.item.kind!=='reading')return;
   const current=study.item.priority;
@@ -1597,7 +1597,7 @@ $('study-priority').onclick=()=>void enqueue(async()=>{
 $('study-edit').onclick=()=>void enqueue(toggleStudyEditing);
 $('study-more').onclick=()=>{const menu=$('study-more-menu');menu.hidden=!menu.hidden;$('study-more').setAttribute('aria-expanded',String(!menu.hidden));};
 $('study-browse').onclick=()=>{hideStudyMenu();void window.reading.openBrowserWindow(undefined,current?.note.id||null).catch(()=>{});};
-// 1.104：更多里的「退出复习」已移除（用 Alt+R 或侧栏按钮退出）
+// 更多里的「退出复习」已移除（用 Alt+R 或侧栏按钮退出）
 for(const button of $('highlight-controls').querySelectorAll<HTMLButtonElement>('button'))button.onclick=()=>{
   if(!current)return;const key=button.dataset.highlight;if(key==='all'){const value=!(highlights.extract&&highlights.cloze);highlights={extract:value,cloze:value};}else highlights={...highlights,[key!]:!highlights[key as 'extract'|'cloze']};
   editors?.question.setHighlights(highlights);editors?.answer?.setHighlights(highlights);renderStudyControls();void request('settingSet',{key:'highlights:'+current.note.id,value:highlights});
@@ -1612,7 +1612,7 @@ setInterval(()=>{
   void enqueue(async()=>{await refreshCounts();if(study&&!study.item){study=await request<StudySnapshot>('reviewRefresh');if(study.item)await presentStudy();else renderStudyControls();}});
 },15000);
 
-// ===== 1.133：独立「添加卡片」窗口（?add=1）=====
+// ===== 独立「添加卡片」窗口（?add=1）=====
 // 仿 Anki 的「添加」：先选类型与位置，再写正文/答案；添加后清空正文但不关窗，方便连续添加。
 async function mountAddCardWindow():Promise<void>{
   document.body.classList.add('solo-add');
@@ -1683,7 +1683,7 @@ async function mountAddCardWindow():Promise<void>{
 void enqueue(async()=>{
   configuration=await request<Configuration>('configGet');applyConfiguration();
   await loadContextMenus().catch(()=>{});
-  // 1.133：独立浏览窗口（?browser=1）与独立添加窗口（?add=1）只做最小初始化：
+  // 独立浏览窗口（?browser=1）与独立添加窗口（?add=1）只做最小初始化：
   // 不建目录树、不查牌组计数、不恢复上次打开的卡片——这两扇窗打开慢主要慢在这里。
   if(soloWindow){
     if(soloAdd)await mountAddCardWindow();
@@ -1701,7 +1701,7 @@ void enqueue(async()=>{
     request<number>('settingGet',{key:'sidebarWidth'}),request<string>('settingGet',{key:'lastNode'}),
     window.reading.uiStateGet('lastNode').catch(()=>null),
   ]);
-  // 1.200：优先用本机上次关闭时聚焦的卡片；没有本机记录时才回退到数据库里的旧值（升级迁移）。
+  // 优先用本机上次关闭时聚焦的卡片；没有本机记录时才回退到数据库里的旧值（升级迁移）。
   const last=typeof localLast==='string'&&localLast?localLast:dbLast;
   if(typeof last==='string'&&last)void window.reading.uiStateSet('lastNode',last).catch(()=>{});
   if(size){fontSize=Math.max(10,Math.min(48,size));document.documentElement.style.setProperty('--text-size',fontSize+'px');}
@@ -1710,7 +1710,7 @@ void enqueue(async()=>{
   const savedTypes=await request('settingGet',{key:'directoryTypes'});directoryTypes=Array.isArray(savedTypes)?savedTypes.filter(type=>['topic','material','cloze'].includes(type)):[];
   applyDirectoryTypes();await tree.setTypes(directoryTypes);
   await refreshCounts();
-  // 1.26：独立编辑窗口（?card=<id>）只打开这一张卡，隐藏目录树与功能栏。
+  // 独立编辑窗口（?card=<id>）只打开这一张卡，隐藏目录树与功能栏。
   if(soloCard){
     document.body.classList.add('solo-card');
     if(await request('get',{id:soloCard}))await open(soloCard);

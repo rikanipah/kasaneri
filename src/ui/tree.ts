@@ -10,7 +10,7 @@ export interface TreeActions {
   context:(node:TreeNode|null,event:MouseEvent)=>void;
   move:(node:TreeNode,parentId:string|null)=>void;
   rename:(node:TreeNode)=>void;
-  /** 1.205：点目录树空白处取消牌组聚焦。 */
+  /** 点目录树空白处取消牌组聚焦。 */
   deselect?:()=>void;
 }
 
@@ -31,7 +31,7 @@ export class DirectoryTree {
   private branchEnds=new Map<string,number>();
   private types:TreeType[]=[];
   private generation=0;
-  /** 1.209：双击自己判——浏览器 detail 为偶数、且 600 ms 内是同一行。 */
+  /** 双击自己判——浏览器 detail 为偶数、且 600 ms 内是同一行。 */
   private static readonly doubleClickDelay=600;
   private lastClick:{id:string;at:number}={id:'',at:0};
   private lastToggle:{id:string;at:number}={id:'',at:0};
@@ -60,7 +60,7 @@ export class DirectoryTree {
       if((event.target as HTMLElement).closest('.tree-row'))return;
       this.selected=null;this.render();this.actions.deselect?.();
     });
-    // 1.210：行的点击统一在 layer 上代理。行元素会随选中状态重绘被换掉，
+    // 行的点击统一在 layer 上代理。行元素会随选中状态重绘被换掉，
     // 绑在行/标签上的点击会在快速连点时丢一次（mousedown 与 mouseup 落在不同元素上），
     // 代理挂在稳定的 layer 上就不会。收展按钮自己处理，跳过。
     this.layer.addEventListener('click',event=>{
@@ -100,7 +100,7 @@ export class DirectoryTree {
     this.flatten();if(this.selected)await this.reveal(this.selected);
   }
 
-  /** 1.210：单击只选中聚焦；同一行的偶数次点击（2、4、6…）算双击，只展开/收起它自己这一级。 */
+  /** 单击只选中聚焦；同一行的偶数次点击（2、4、6…）算双击，只展开/收起它自己这一级。 */
   private rowClick(node:TreeNode,event:MouseEvent):void{
     const now=Date.now();
     const sameRow=this.lastClick.id===node.id&&now-this.lastClick.at<DirectoryTree.doubleClickDelay;
@@ -120,7 +120,7 @@ export class DirectoryTree {
     branch.loading=true;this.cache.set(key,branch);
     const generation=this.generation;
     try{
-      // 1.167：目录树一次取全该层（上限 2000），不再显示「加载更多」
+      // 目录树一次取全该层（上限 2000），不再显示「加载更多」
       const page=await window.reading.request<ChildrenPage>('children',{parentId,limit:2000,types:this.types});
       if(generation!==this.generation)return;
       const merged=new Map((more?branch.items:[]).map(node=>[node.id,node]));
@@ -168,7 +168,7 @@ export class DirectoryTree {
     this.flatten();
     const at=this.flattened.findIndex(row=>row.node?.id===id);
     if(at>=0){
-      // 1.97：把当前卡片滚到**可视区中间**（以前只在贴边时才滚，进入复习/待办时
+      // 把当前卡片滚到**可视区中间**（以前只在贴边时才滚，进入复习/待办时
       // 当前卡片常常被顶到最底边甚至看不见，用户找不到它在哪一行）
       const rowTop=at*this.rowHeight;
       const centered=rowTop-this.host.clientHeight/2+this.rowHeight/2;
@@ -254,7 +254,7 @@ export class DirectoryTree {
       badge.setAttribute('aria-hidden','true');
       const text=document.createElement('span');text.className='tree-name';text.textContent=node.title;
       label.append(badge,text);
-      // 1.210：点击统一交给 layer 上的代理处理（见 constructor），这里不再给每行绑 onclick。
+      // 点击统一交给 layer 上的代理处理（见 constructor），这里不再给每行绑 onclick。
       // 行的元素会随选中状态重绘被换掉，绑在行上的事件会在连点时丢一次，代理就不会。
       label.onkeydown=event=>{
         if(event.key==='ArrowRight'&&!this.expanded.has(node.id))void this.toggle(node);
@@ -326,8 +326,8 @@ export class DirectoryTree {
   private stickyRow(index:number,side:'top'|'bottom'){
     const row=this.flattened[index],node=row.node!,element=document.createElement('div');element.className='tree-row sticky-row';element.dataset.id=node.id;element.dataset.side=side;
     element.style.paddingLeft=Math.min(row.depth*20+3,43)+'px';
-    // 1.6 ③：顶部吸顶行点标签 = 原地收起该级（v16 测试覆盖）。
-    // 1.12：底部「后续同级」吸底行点标签 = 直接跳转到那个目录（用户要求），
+    // 顶部吸顶行点标签 = 原地收起该级（v16 测试覆盖）。
+    // 底部「后续同级」吸底行点标签 = 直接跳转到那个目录，
     //       滚动到该行作为可见区顶端，并选中它；收展用左侧 +/− 按钮。
     const isBottom=side==='bottom';
     const toggle=document.createElement('button');toggle.className='tree-toggle';toggle.textContent=this.expanded.has(node.id)?'−':'+';toggle.setAttribute('aria-label',t('收展 {0}',node.title));
@@ -339,7 +339,7 @@ export class DirectoryTree {
     if(node.kind==='folder'){const group=document.createElement('span');group.className='folder-counts';const counts=this.counts[node.id]||{new:0,learning:0,review:0};for(const key of ['new','learning','review'] as const){const count=document.createElement('span');count.className='count-'+key+(counts[key]===0?' is-zero':'');count.textContent=String(counts[key]);group.append(count);}element.append(group);}
     element.oncontextmenu=event=>{event.preventDefault();this.actions.context(node,event);};return element;
   }
-  /** 1.12：把某一行滚到可见区顶端（顶部吸顶栏占位要扣掉），并选中该目录。 */
+  /** 把某一行滚到可见区顶端（顶部吸顶栏占位要扣掉），并选中该目录。 */
   private jumpTo(index:number){
     const node=this.flattened[index]?.node;if(!node)return;
     this.selected=node.id;

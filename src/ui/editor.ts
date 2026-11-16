@@ -27,10 +27,10 @@ export interface EditorOptions {
   readOnly?:boolean;
   snapshot?:any;
   onChange:(value:string,typing:boolean)=>void;
-  /** 1.88（N17）：音频/视频是否自动播放（全局开关，来自设置） */
+  /** 音频/视频是否自动播放（全局开关，来自设置） */
   audioAutoplay?:boolean;
   onNavigate:(id:string)=>void;
-  /** 1.65：同一位置有多条锚点时，交给界面弹出选择框 */
+  /** 同一位置有多条锚点时，交给界面弹出选择框 */
   onNavigateChoice?:(ids:string[],at:{x:number,y:number})=>void;
   onAttachmentMenu:(event:MouseEvent,choose:()=>void)=>void;
   onImageContext?:(event:MouseEvent,image:ImageTarget)=>void;
@@ -40,7 +40,7 @@ export interface EditorOptions {
 const renderer=new MarkdownIt({html:true,linkify:true,breaks:true});
 const assets=new Map<string,Promise<Asset>>();
 const discardedWidgets=new WeakSet<HTMLElement>();
-// 1.158：音频/视频播放器按附件 id 复用，切卡片时不重建（避免控件动画重播的闪）
+// 音频/视频播放器按附件 id 复用，切卡片时不重建（避免控件动画重播的闪）
 const mediaCache=new Map<string,HTMLMediaElement>();
 const redraw=StateEffect.define<void>();
 const focusChanged=StateEffect.define<boolean>();
@@ -87,7 +87,7 @@ class RichWidget extends WidgetType {
       const embed=parseAssetEmbed(this.value);
       if(!embed){wrapper.textContent=this.value;return wrapper;}
       wrapper.classList.add('reading-media');
-      // 1.137：不先写「载入附件…」再换内容——切卡片时那行字会闪一下；留同高空位，加载完直接画上去
+      // 不先写「载入附件…」再换内容——切卡片时那行字会闪一下；留同高空位，加载完直接画上去
       wrapper.textContent='';wrapper.style.minHeight='22px';
       const id=embed.assetId;
       assetInfo(id).then(asset=>{
@@ -168,7 +168,7 @@ class RichWidget extends WidgetType {
           wrapper.append(handle);
           handle.hidden=view.state.readOnly;
         }else if(asset.mime.startsWith('audio/')||asset.mime.startsWith('video/')){
-          // 1.158：播放器按附件 id 缓存复用——切卡片时不再销毁重建，避免控件重新加载/动画重播造成的闪。
+          // 播放器按附件 id 缓存复用——切卡片时不再销毁重建，避免控件重新加载/动画重播造成的闪。
           const tag=asset.mime.startsWith('audio/')?'audio':'video';
           let media=mediaCache.get(asset.id);
           if(!media||media.tagName.toLowerCase()!==tag){
@@ -178,8 +178,8 @@ class RichWidget extends WidgetType {
             mediaCache.set(asset.id,media);
             if(mediaCache.size>24)mediaCache.delete(mediaCache.keys().next().value!);
           }
-          // 1.88（N17）：全局开关打开时自动播放。
-          // 1.161：照 Anki 的做法——自动播放时只显示一个圆形 ▶ 按钮（不带进度条，所以没有播放动画可闪）；
+          // 全局开关打开时自动播放。
+          // 照 Anki 的做法——自动播放时只显示一个圆形 ▶ 按钮（不带进度条，所以没有播放动画可闪）；
           // 想重播/拖进度时点它，才展开原生控件。
           if(this.autoplay){
             media.autoplay=true;
@@ -188,7 +188,7 @@ class RichWidget extends WidgetType {
             play.type='button';play.className='media-play';play.textContent='▶';play.title=t('播放 / 重播（点开可调进度）');
             play.onclick=event=>{event.stopPropagation();media!.controls=true;play.remove();const result=media!.play?.();if(result)void result.catch(()=>{});};
             wrapper.append(play);
-            // 1.201：清掉 1.160 的 220ms 延迟自动播放（当时为防闪加的补丁；播放器缓存复用已经解决闪，
+            // 清掉 旧版 的 220ms 延迟自动播放（当时为防闪加的补丁；播放器缓存复用已经解决闪，
             // 保留 preload=metadata 和 canplay 重试即可）。
             const startPlayback=()=>{const result=media!.play?.();if(result)void result.catch(()=>{media!.addEventListener('canplay',()=>void media!.play?.().catch(()=>{}),{once:true});});};
             startPlayback();
@@ -265,10 +265,10 @@ export class ReadingEditor {
       EditorView.domEventHandlers({
         focus:(_,view)=>{queueMicrotask(()=>{if(!this.destroyed)view.dispatch({effects:[focusChanged.of(true),redraw.of()]});});return false;},
         blur:(_,view)=>{queueMicrotask(()=>{if(!this.destroyed)view.dispatch({effects:[focusChanged.of(false),redraw.of()]});});return false;},
-        // 1.52：Ctrl（macOS 为 Cmd）+ 点击摘录/检测卡高亮 → 打开对应卡片（类似 Obsidian 的 Ctrl+点击链接）
+        // Ctrl（macOS 为 Cmd）+ 点击摘录/检测卡高亮 → 打开对应卡片（类似 Obsidian 的 Ctrl+点击链接）
         mousedown:(event)=>{
           if(!event.ctrlKey&&!event.metaKey)return false;
-          // 1.65：沿祖先链收集所有被点中的锚点；高亮被关掉时这些 mark 根本不存在，自然也跳不了
+          // 沿祖先链收集所有被点中的锚点；高亮被关掉时这些 mark 根本不存在，自然也跳不了
           const start=event.target as HTMLElement|null;
           const ids:string[]=[];let node:HTMLElement|null=start;
           while(node&&node!==this.view?.contentDOM){
@@ -399,7 +399,7 @@ export class ReadingEditor {
 
   private decorations(state:EditorState):DecorationSet {
     const text=state.doc.toString(),selection=state.selection.main;
-    // 1.21：光标落在公式边界也算"编辑中"（±1 字符容差）。
+    // 光标落在公式边界也算"编辑中"（±1 字符容差）。
     // 原因：光标在 `\]` 右侧时旧逻辑判定为公式外 → 立刻渲染，导致 `]` 永远点不到、
     // 也没法把光标放到公式末尾。Obsidian 的体验是"点渲染块先进入源码，离开一点才恢复渲染"。
     const inside=(from:number,to:number)=>!state.readOnly&&state.field(focusedField)&&
@@ -453,7 +453,7 @@ export class ReadingEditor {
       if(node.name==='Table'&&!inside(node.from,node.to)){
         addRich(node.from,node.to,'markdown',text.slice(node.from,node.to),true);
       }
-      // 1.133：`[文字]` 这类没有 URL 的方括号不该按链接着色（本项目没有双链，方括号就是普通字符）。
+      // `[文字]` 这类没有 URL 的方括号不该按链接着色（本项目没有双链，方括号就是普通字符）。
       // 只保留真正的链接 `[x](url)`（已由上面的 external 规则渲染）与附件 `![[asset:…]]`。
       if(node.name==='Link'&&!overlaps(node.from,node.to)&&text[node.to]!=='('&&!inside(node.from,node.to)){
         result.push(Decoration.mark({class:'plain-bracket-text'}).range(node.from,node.to));
@@ -473,9 +473,9 @@ export class ReadingEditor {
       if(anchor.section&&anchor.section!==this.options.section)continue;
       const type=anchor.highlight||'extract';if(this.options.highlights?.[type]===false)continue;
       const from=locateAnchor(text,anchor),to=from+anchor.quote.length;
-      // 1.65：同一段文字可能有多条锚点（重复摘录/检测卡），这里不再去重，让点击时能列出候选卡片
+      // 同一段文字可能有多条锚点（重复摘录/检测卡），这里不再去重，让点击时能列出候选卡片
   if(from>=0)result.push(Decoration.mark({class:'irtree-extracted irtree-extracted-'+type,
-        // 1.52：把目标节点 id 写到 DOM 上，配合 Ctrl+点击跳转
+        // 把目标节点 id 写到 DOM 上，配合 Ctrl+点击跳转
         attributes:anchor.nodeId?{'data-anchor-node':anchor.nodeId}:undefined}).range(from,to));
     }
     return Decoration.set(result,true);
@@ -483,7 +483,7 @@ export class ReadingEditor {
 
   focus():void {this.view.focus();}
   snapshot():any {return this.view.state.toJSON({history:historyField});}
-  /** 1.133：选区两侧切换 `**加粗**` / `*斜体*`（Ctrl+B / Ctrl+I）。已包裹则去掉。 */
+  /** 选区两侧切换 `**加粗**` / `*斜体*`（Ctrl+B / Ctrl+I）。已包裹则去掉。 */
   toggleWrap(marker:string):void{
     const view=this.view;
     if(view.state.readOnly)return;

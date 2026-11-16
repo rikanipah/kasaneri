@@ -84,25 +84,25 @@ export class PreferencesDialog {
   private priority:string='';
   private deck:DeckConfiguration|null=null;
   private inherit=true;
-  // 1.6 ⑥：一键优化的结果与提示要跨 render() 存活（render 每次交互都会重建 DOM）。
+  // 一键优化的结果与提示要跨 render() 存活（render 每次交互都会重建 DOM）。
   private optimizeResult:OptimizeResult|null=null;
   private optimizeNote='';
   private pendingWeights:number[]|null=null;
   private optimizeBusy=false;
-  // 1.9：同步设置（独立于复习设置草稿，改动即时生效并落盘）
+  // 同步设置（独立于复习设置草稿，改动即时生效并落盘）
   private syncDraft={enabled:false,port:38641,peers:[] as Array<{name:string;address:string}>};
   private syncHasPassphrase=false;
-  // 1.110：本机设备名（用于对端按名字区分）
+  // 本机设备名（用于对端按名字区分）
   private syncName='';
   private syncState:Awaited<ReturnType<typeof window.reading.syncStatus>>|null=null;
   private viewVersion=0;
-  // 1.47：窗口位置（left/top，px），拖动后记在本机
+  // 窗口位置（left/top，px），拖动后记在本机
   private position={x:0,y:0};
   constructor(private apply:(draft:Configuration,node:TreeNode|null,priority:number|null)=>Promise<Configuration>,
     private applyDeck:(id:string,overrides:Partial<ReviewSettings>|null)=>Promise<DeckConfiguration>,
     private openConflicts:()=>void){
     this.dialog.id='preferences';this.content.className='preference-content';this.dialog.append(this.content);document.body.append(this.dialog);
-    // 1.20：默认固定尺寸（CSS 给 720×760），用户拖动改过的尺寸记在本机 localStorage，下次沿用。
+    // 默认固定尺寸（CSS 给 720×760），用户拖动改过的尺寸记在本机 localStorage，下次沿用。
     try{
       const saved=JSON.parse(localStorage.getItem('preferencesSize')||'null') as {width:number;height:number}|null;
       if(saved&&saved.width>360&&saved.height>320){this.dialog.style.width=saved.width+'px';this.dialog.style.height=saved.height+'px';}
@@ -153,10 +153,10 @@ export class PreferencesDialog {
     this.render();this.dialog.showModal();this.placeDialog();
   }
   private render(){
-    // 1.59：改动即时生效（Obsidian 行为），不需要保存按钮
+    // 改动即时生效（Obsidian 行为），不需要保存按钮
     const error=document.createElement('p');error.className='preference-error';error.hidden=true;error.setAttribute('role','alert');
     let commit=async()=>{};
-    // ===== 1.42：仿 Obsidian 设置窗口——左侧分组导航 + 搜索框，右侧卡片式内容 =====
+    // ===== 仿 Obsidian 设置窗口——左侧分组导航 + 搜索框，右侧卡片式内容 =====
     const SHELL:Array<[string,string,PreferenceTab[]]>=[
       [t('选项'),'',['appearance','general','review','reading','files','sync','backup','trash']],
       [t('其它'),'',['shortcuts','contextMenu','help']],
@@ -199,11 +199,11 @@ export class PreferencesDialog {
     close.textContent='×';close.setAttribute('aria-label',t('关闭设置'));close.title=t('关闭（Esc）');
     close.onclick=()=>this.dialog.close();
     const main=document.createElement('div');main.className='preference-main';
-    // 1.43：把 恢复默认 / 取消 / 保存 三个小按钮放到标题右边（不再用底部三条大色块）
+    // 把 恢复默认 / 取消 / 保存 三个小按钮放到标题右边（不再用底部三条大色块）
     const header=document.createElement('div');header.className='preference-header';
     header.append(title);
     main.append(header,close,body);
-    // 1.53：拖动标题栏移动窗口（按钮/× 不触发）
+    // 拖动标题栏移动窗口（按钮/× 不触发）
     header.style.cursor='move';
     header.addEventListener('pointerdown',event=>{
       if((event.target as HTMLElement).closest('button'))return;
@@ -242,7 +242,7 @@ export class PreferencesDialog {
         row.append(name,input,clear);body.append(row);
       }
     }else{
-      // 1.42：每个 section 开一张新卡片，形成 Obsidian 那种分组卡片列表
+      // 每个 section 开一张新卡片，形成 Obsidian 那种分组卡片列表
     const section=(name:string)=>{
       const card=document.createElement('section');card.className='preference-card';
       const heading=document.createElement('h4');heading.className='preference-group-title';heading.textContent=name;card.append(heading);
@@ -250,7 +250,7 @@ export class PreferencesDialog {
       return card;
     };
       const field=(label:string,key:keyof StudySettings,type:'number'|'select'|'checkbox'|'text',options?:Array<[string,string]>,limits?:[number,number,number])=>{
-        // 1.135：牌组还在继承时，参数一律不显示（默认值就是默认值，改过才需要看见）
+        // 牌组还在继承时，参数一律不显示（默认值就是默认值，改过才需要看见）
         if(this.deck&&this.inherit)return;
         const row=document.createElement('label');row.className='setting-row';const text=document.createElement('span');text.textContent=label;
         const input=type==='select'?document.createElement('select'):document.createElement('input');input.dataset.setting=key;input.setAttribute('aria-label',label);
@@ -259,31 +259,31 @@ export class PreferencesDialog {
         else{input.type=type==='text'?'text':type;input.value=String(value??'');if(type==='checkbox')input.checked=!!value;
           if(limits){input.min=String(limits[0]);input.max=String(limits[1]);input.step=String(limits[2]);}}
         input.disabled=!!this.deck&&this.inherit;
-        // 1.133：学习步骤输入框的可用状态跟着「启用短期学习步骤」走，所以这个开关改完要重绘一次
+        // 学习步骤输入框的可用状态跟着「启用短期学习步骤」走，所以这个开关改完要重绘一次
         input.addEventListener('change',()=>{void commit();if(key==='enableShortTerm')this.render();});
         row.append(text,input);(currentCard||body).append(row);
       };
       const hint=(text:string)=>(currentCard||body).append(preferenceHint(text));
       if(this.deck){
-        // 1.136：用户要求不显示「继承上级设置/继承来源」这一层关系——默认值就是默认的，
+        // 不显示「继承上级设置/继承来源」这一层关系——默认值就是默认的，
         // 牌组自己改过的参数按改过的算（保存时也只写改过的键）。
         hint(t('牌组：{0}。没改过的参数用默认值；改过的按这个牌组的设置算。',this.deck.path));
       }
-      // 1.135：牌组还在继承时不显示任何参数（默认值就是默认值，改过才需要看见）
+      // 牌组还在继承时不显示任何参数（默认值就是默认值，改过才需要看见）
       if((this.deck&&!this.inherit)||(!this.deck&&this.tab==='review')){
         if(!this.deck){
           section(t('回答按钮'));
           field(t('显示「困难」'),'showHardRating','checkbox');
           field(t('显示「简单」'),'showEasyRating','checkbox');
         }
-        // 1.133：按 Anki 的牌组选项分组：新卡片 / 每日上限 / 遗忘 / 展示顺序 / FSRS
+        // 按 Anki 的牌组选项分组：新卡片 / 每日上限 / 遗忘 / 展示顺序 / FSRS
         const profile=this.deck?(this.inherit?this.deck.inherited:this.deck.effective):this.draft.settings;
         const stepField=(label:string,key:'learningSteps'|'relearningSteps')=>{
           if(this.deck&&this.inherit)return;
           const row=document.createElement('label');row.className='setting-row short-term-step';
           const text=document.createElement('span');text.textContent=label;
           const input=document.createElement('input');input.dataset.memory=key;input.setAttribute('aria-label',label);
-          // 1.133：学习/重学步骤只在启用短期学习步骤时生效，关闭时置灰而不是隐藏（位置固定，便于对照 Anki）
+          // 学习/重学步骤只在启用短期学习步骤时生效，关闭时置灰而不是隐藏（位置固定，便于对照 Anki）
           input.disabled=(!!this.deck&&this.inherit)||!profile.enableShortTerm;
           input.value=(profile[key]||[]).map(step=>{const match=step.match(/^([\d.]+)([smhd])$/)!;return Number(match[1])*({s:1/60,m:1,h:60,d:1440}[match[2] as 's'|'m'|'h'|'d']);}).join(' ');
           input.placeholder=t('例如：1 10（分钟，空格分隔）');
@@ -311,7 +311,7 @@ export class PreferencesDialog {
         field(t('搁置待复习的关联卡片到次日'),'buryReview','checkbox');
         field(t('搁置跨日学习中的关联卡片到次日'),'buryLearning','checkbox');
         hint(t('关联卡片＝记忆树里与这张卡相连的父/子检测卡。有子卡被搁置时父卡会一起搁置，其它没被搁置的子卡不受影响；搁置只是挪到明天零点，不改记忆状态。'));
-        // 1.198：先修解锁条件（全局与各牌组都能调）
+        // 先修解锁条件（全局与各牌组都能调）
         section(t('先修解锁'));
         field(t('先修卡连续几次「良好」才解锁'),'masteryReps','number',undefined,[1,9,1]);
         hint(t('默认 4：先修卡最近连续 4 次评分都达到「良好/简单」才解锁依赖卡；设为 1 就退回原来的「最近一次良好」。中间有一次「困难/重来」会重新累计。'));
@@ -338,16 +338,16 @@ export class PreferencesDialog {
         weightsInput.disabled=!!this.deck&&this.inherit;
         weightsInput.value=(profile.fsrsWeights||[]).join(', ');
         weightsInput.placeholder=t('留空使用所选模型的默认参数');
-        // 1.6 ⑥：点"填入优化参数"时若牌组还在继承状态，会先取消继承并整页重建，这里把参数补回输入框。
+        // 点"填入优化参数"时若牌组还在继承状态，会先取消继承并整页重建，这里把参数补回输入框。
         if(this.pendingWeights){weightsInput.value=this.pendingWeights.join(', ');this.pendingWeights=null;}
         weightsRow.append(weightsText,weightsInput);(currentCard||body).append(weightsRow);
         hint(t('参数沿用导入值，也可手动粘贴。切换模型时，可清空参数以使用该模型默认值；修改设置不重置已学进度。'));
-        // —— 1.6 ⑥ / 1.15：一键优化参数 + 留存度测算 ——
-        // 1.15 改版（用户反馈"太慢"）：
+        // —— 1.6 ⑥ / 一键优化参数 + 留存度测算 ——
+        // 留存度评估：
         //   · 一键优化只用最近 2 万条复习记录，训练从数分钟降到几十秒；
         //   · 「测算留存度」不再训练 + 时间序列评测，改为 SQL 直算真实通过率，秒级返回。
         const optimizeRow=document.createElement('div');optimizeRow.className='preference-optimize';
-        // 1.19：进度条。单牌组训练只有一个阻塞调用（拿不到真实进度）→ 不确定进度条 + 已用秒数；
+        // 进度条。单牌组训练只有一个阻塞调用（拿不到真实进度）→ 不确定进度条 + 已用秒数；
         // 逐牌组优化按「已完成牌组数 / 总数」给真实进度。
         const progress=document.createElement('div');progress.className='progress is-indeterminate';
         progress.hidden=true;const progressFill=document.createElement('span');progress.append(progressFill);
@@ -392,7 +392,7 @@ export class PreferencesDialog {
           }finally{this.optimizeBusy=false;this.render();}
         })();
         const optimizeButton=document.createElement('button');optimizeButton.type='button';
-        // 1.16：牌组右键进来的「复习设置」只优化当前牌组（含子牌组），不会动全局参数。
+        // 牌组右键进来的「复习设置」只优化当前牌组（含子牌组），不会动全局参数。
         optimizeButton.textContent=this.deck?t('一键优化本牌组参数'):t('一键优化参数（实验性）');
         optimizeButton.disabled=this.optimizeBusy;
         optimizeButton.onclick=()=>runOptimize();
@@ -414,7 +414,7 @@ export class PreferencesDialog {
           finally{simulate.disabled=false;}
         };
         optimizeRow.append(optimizeButton,evaluateButton,simulate,progress,optimizeStatus);
-        // 1.16：全局优化 = 每个牌组各自训练、各自保存（不是把所有牌组混成一套参数）。
+        // 全局优化 = 每个牌组各自训练、各自保存（不是把所有牌组混成一套参数）。
         if(!this.deck){
           const globalRow=document.createElement('div');globalRow.className='preference-optimize';
           const globalButton=document.createElement('button');globalButton.type='button';
@@ -424,7 +424,7 @@ export class PreferencesDialog {
             if(!window.confirm(t('将对每个有复习记录的牌组分别训练并写入该牌组的参数（各牌组参数互不影响）。可能耗时数分钟，继续？')))return;
             this.optimizeBusy=true;this.optimizeNote=t('正在读取牌组清单…');this.render();
             try{
-              // 1.19：逐牌组执行以获得真实进度（i / total），每牌组 5000 条、60 秒超时。
+              // 逐牌组执行以获得真实进度（i / total），每牌组 5000 条、60 秒超时。
               const decks=await window.reading.request<Array<{folderId:string;title:string;count:number}>>('optimizeDeckList');
               if(!decks.length)throw Error(t('没有复习记录达到训练要求的牌组。'));
               const bar=document.querySelector('#preferences .progress') as HTMLElement|null;
@@ -467,7 +467,7 @@ export class PreferencesDialog {
         }
         reviewGroup.append(optimizeRow);
       }else if(this.tab==='appearance'){
-        // 1.175：外观单独一页——主题、字号等影响界面观感的设置都放这里
+        // 外观单独一页——主题、字号等影响界面观感的设置都放这里
         section(t('主题'));
         field(t('颜色主题'),'theme','select',[['dark',t('深色（默认）')],['light',t('浅色')],['system',t('跟随系统')]]);
         hint(t('深色是默认主题；选「跟随系统」时会随 Windows 的浅色/深色自动切换。'));
@@ -514,23 +514,23 @@ export class PreferencesDialog {
         languageRow.append(languageLabel,languageSelect);languageSection.append(languageRow,languageNote);
         hint(t('语言偏好保存在本机，适用于所有窗口。'));
 
-        // 1.204：默认文件夹名称（没有文件夹时自动创建；旧「未归类」按它改名）
+        // 默认文件夹名称（没有文件夹时自动创建；旧「未归类」按它改名）
         section(t('目录'));field(t('默认文件夹名称'),'defaultFolderName','text');
         hint(t('资料库没有任何文件夹时自动创建这个文件夹；旧库的「未归类」会改成这里的名字。也可以直接在目录树里 F2 改。'));
-        // 1.88（N17）：音频自动播放（全局）
+        // 音频自动播放（全局）
         section(t('媒体'));field(t('音频自动播放'),'audioAutoplay','checkbox');
         hint(t('打开后，正文/卡片里的音频与视频会一出现就自动播放；关闭时需手动点播放。'));
-        // 1.133：删除确认框可关（默认关＝直接删，仍能撤销或到垃圾桶恢复）
+        // 删除确认框可关（默认关＝直接删，仍能撤销或到垃圾桶恢复）
         section(t('删除'));field(t('删除前弹确认框'),'confirmDelete','checkbox');
         hint(t('默认关闭：点「删除卡片 / 删除文件夹」直接进垃圾桶。打开后每次删除都先问一次。两种方式都能用 Ctrl+Z 撤销，或到垃圾桶恢复。'));
         const functions=section(t('功能栏'));
         const descriptions:Array<[IconName,string]>=[['panel-right-close',t('目录树 · 展开或收起右侧目录')],['play',t('复习 · 统一复习全部牌组的检测卡')],['book-open',t('待办 · 按优先级阅读主题与提取')],['panels-top-left',t('浏览卡片 · 筛选并编辑卡片')],['keyboard',t('快捷键 · 修改操作组合键')],['settings',t('设置 · 外观、复习与待办设置')]];
         for(const [name,text] of descriptions){const row=document.createElement('div');row.className='function-description';const graphic=document.createElement('span');graphic.innerHTML=icon(name);const description=document.createElement('span');description.textContent=text;row.append(graphic,description);functions.append(row);}
         hint(t('目录标题右侧的黄色、绿色、蓝色按钮分别筛选主题、提取和检测卡。可叠加；全部关闭时显示全部。'));
-        // 1.8：快照导出/导入（同步方案阶段 0）
+        // 快照导出/导入（同步方案阶段 0）
         const dataGroup=section(t('数据'));
         const dataRow=document.createElement('div');dataRow.className='preference-optimize';
-        // 1.207：附件管理完整版（占用、未引用清理、回收站恢复/彻底删除）
+        // 附件管理完整版（占用、未引用清理、回收站恢复/彻底删除）
         const assetButton=document.createElement('button');assetButton.type='button';assetButton.textContent=t('附件管理…');
         assetButton.onclick=()=>void openAttachmentManager();
         const assetOpen=document.createElement('button');assetOpen.type='button';assetOpen.textContent=t('打开附件目录');
@@ -568,7 +568,7 @@ export class PreferencesDialog {
         select.value=this.priority;row.append(label,select);projectGroup.append(row);
       }
       }else if(this.tab==='sync'){
-        // ===== 1.9：同步图形面板（即时生效，不参与"保存设置"流程）=====
+        // ===== 同步图形面板（即时生效，不参与"保存设置"流程）=====
         if(!this.syncState){hint(t('读取同步设置失败，点击「同步」重试。'));}
         else{
           const initialSync=this.syncState;
@@ -582,7 +582,7 @@ export class PreferencesDialog {
               const name=document.createElement('span');name.className='sync-status-label';name.textContent=label;
               const val=document.createElement('span');val.className='sync-status-value';val.textContent=value;
               line.append(name,val);lines.append(line);};
-            // 1.109/1.111：把"同步到底有没有在跑"讲清楚
+            // 旧版/把"同步到底有没有在跑"讲清楚
             if(state.status.running){row(t('进度'),t('正在同步…'),'info');}
             if(state.status.error){row(t('同步出错'),state.status.error,'error');}
             else if(errorOnly){status.replaceChildren(lines);return;}
@@ -635,7 +635,7 @@ export class PreferencesDialog {
             status.replaceChildren(lines);
           };
           const status=document.createElement('div');status.className='sync-status';
-          // 1.111：同步页打开时每 3 秒刷新一次，倒计时与状态是活的
+          // 同步页打开时每 3 秒刷新一次，倒计时与状态是活的
           const refresh=async()=>{try{renderStatus(await window.reading.syncStatus());}catch{}};
           const timer=setInterval(()=>{if(!document.body.contains(status)){clearInterval(timer);return;}void refresh();},3000);
           const apply=async(changes:{passphrase?:string;name?:string}={})=>{
@@ -648,14 +648,14 @@ export class PreferencesDialog {
               status.replaceChildren();const err=document.createElement('div');err.className='sync-status-line error';err.textContent=reason instanceof Error?reason.message:String(reason);status.append(err);
             }
           };
-          // 1.114：顶部工具条——立即同步 / 冲突文件
+          // 顶部工具条——立即同步 / 冲突文件
           const topBar=document.createElement('div');topBar.className='sync-topbar';
           const syncNowTop=document.createElement('button');syncNowTop.type='button';syncNowTop.textContent=t('立即同步');syncNowTop.className='primary';
           const conflictsButton=document.createElement('button');conflictsButton.type='button';conflictsButton.textContent=t('打开冲突文件');
           const manualResult=document.createElement('p');
           manualResult.className='sync-feedback';manualResult.setAttribute('role','status');manualResult.hidden=true;
           topBar.append(syncNowTop,conflictsButton);body.append(topBar,banner,manualResult);
-          // 1.194：写清同步范围和限制（自动同步已取消，只保留「立即同步」）。
+          // 写清同步范围和限制（自动同步已取消，只保留「立即同步」）。
           const syncNotes=document.createElement('div');syncNotes.className='preference-hint';
           syncNotes.append(
             t('同步会交换复习/阅读记录和卡片内容（正文、标题、附件、增删）。两边都改过的卡片会进入「冲突文件」，可以逐张选择或删除。'),
@@ -679,7 +679,7 @@ export class PreferencesDialog {
           };
 
           const statusGroup=section(t('状态'));statusGroup.append(status);renderStatus(initialSync);
-          // 1.76：把本机可用于同步的「地址:端口」列出来，方便填到另一台机器；点击即复制。
+          // 把本机可用于同步的「地址:端口」列出来，方便填到另一台机器；点击即复制。
           const addressBox=document.createElement('div');
           const addressTitle=document.createElement('p');addressTitle.className='preference-hint';
           addressTitle.textContent=t('本机地址（把其中一条填到另一台机器的「对端」里）：');
@@ -724,7 +724,7 @@ export class PreferencesDialog {
           renderKeyStatus();
           const keyControls=document.createElement('span');keyControls.className='sync-key-controls';keyControls.append(key,clearKey);
           keyRow.append(keyText,keyControls);connection.append(keyRow);
-          // 1.110：本机设备名（对端按名字区分）
+          // 本机设备名（对端按名字区分）
           const nameRow=document.createElement('label');nameRow.className='setting-row';
           const nameText=document.createElement('span');nameText.textContent=t('本机设备名');
           const deviceNameInput=document.createElement('input');deviceNameInput.type='text';deviceNameInput.placeholder=t('例如：台式机');
@@ -760,7 +760,7 @@ export class PreferencesDialog {
           hint(t('两台设备使用同一口令，并互相添加对端地址。开启后每 60 秒自动同步，也可以点「立即同步」。'));
         }
       }else if(this.tab==='backup'){
-        // ===== 1.30：自动备份（定时把快照导出到指定文件夹）=====
+        // ===== 自动备份（定时把快照导出到指定文件夹）=====
         hint(t('自动备份 = 定时把 data\\library 的完整快照导出到你选的文件夹（内容与「导出快照」一致：数据库 + 附件 + 缓存）。建议放到另一块磁盘或网盘同步目录。'));
         const status=preferenceHint(t('正在读取备份设置…'));
         body.append(status);
@@ -779,7 +779,7 @@ export class PreferencesDialog {
         };
         const enable=document.createElement('input');enable.type='checkbox';
         const interval=document.createElement('input');interval.type='number';interval.min='1';interval.max='720';
-        // 1.125：保留份数（0 = 不清理）。只删带 manifest.json 的快照目录。
+        // 保留份数（0 = 不清理）。只删带 manifest.json 的快照目录。
         const keepLast=document.createElement('input');keepLast.type='number';keepLast.min='0';keepLast.max='3650';
         const apply=async(patch:Record<string,unknown>)=>{
           try{render(await window.reading.backupConfigure({enabled:enable.checked,
@@ -813,7 +813,7 @@ export class PreferencesDialog {
         hint(t('备份文件是普通文件夹（Kasaneri-快照-<时间>），可以直接拷贝到另一台机器用「导入快照」恢复。')
           +t('「保留份数」= 备份文件夹里最多留几份快照，超出时自动删最旧的；只删带 manifest.json 的快照目录，同文件夹里的其他内容不动。填 0 表示不清理。'));
       }else if(this.tab==='files'){
-        // ===== 1.71：文件管理——新建主题的默认落点 =====
+        // ===== 文件管理——新建主题的默认落点 =====
         hint(t('用快捷键 Alt+F 新建主题时，会直接创建在下面选定的「默认文件夹」里；选「跟随当前选中」则用目录树里选中的文件夹。'));
         const select=document.createElement('select');select.setAttribute('aria-label',t('默认文件夹'));
         const none=document.createElement('option');none.value='';none.textContent=t('跟随当前选中');select.append(none);
@@ -832,7 +832,7 @@ export class PreferencesDialog {
         })();
         select.onchange=()=>void window.reading.request('settingSet',{key:'defaultTopicFolder',value:select.value?{folderId:select.value}:null});
         hint(t('「移至…」：右键任意卡片/文件夹 →「移至…」，输入或用 ↑↓ 选父级目录（输入框里可用 / 逐级定位，例如 Anime/1），回车即移动，之后目录树会自动展开并选中这张卡片。'));      }else if(this.tab==='trash'){
-        // ===== 1.17：垃圾桶独立设置页 =====
+        // ===== 垃圾桶独立设置页 =====
         hint(t('删除的卡片先放进垃圾桶，可以恢复或彻底删除。超过保留天数后自动永久删除；启动时与每 6 小时检查一次。'));
         field(t('垃圾桶保留天数'),'trashRetentionDays','number',undefined,[7,3650,1]);
         const trashGroup=section(t('当前垃圾桶'));
@@ -855,7 +855,7 @@ export class PreferencesDialog {
       }else if(this.tab==='contextMenu'){
         body.append(contextMenuPreferences());
       }else if(this.tab==='help'){
-        // ===== 1.210：帮助页＝常用操作 + 名词解释；按板块折叠，先讲怎么做再讲是什么 =====
+        // ===== 帮助页＝常用操作 + 名词解释；按板块折叠，先讲怎么做再讲是什么 =====
         const GUIDE:Array<{title:string;children:Array<{title:string;texts:string[]}>}>=[
   {title:t('一、常用操作'),children:[
     {title:t('复习检测卡'),texts:[
@@ -937,8 +937,8 @@ export class PreferencesDialog {
         }
       }
     }
-    // 1.59：仿 Obsidian——没有保存/取消按钮，改动即时写回；出错显示在底部提示行。
-    // 1.135：牌组只保存「和继承值不同」的参数，避免一取消继承就把默认值整批写进牌组。
+    // 仿 Obsidian——没有保存/取消按钮，改动即时写回；出错显示在底部提示行。
+    // 牌组只保存「和继承值不同」的参数，避免一取消继承就把默认值整批写进牌组。
     commit=async()=>{
       try{
         this.collect();

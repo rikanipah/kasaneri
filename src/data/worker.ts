@@ -31,15 +31,15 @@ function contentAssets():ContentAssets{
   return assets??=new ContentAssets(repository);
 }
 const ready=(async()=>{
-  // 1.7 ⑤：workerData.libraryDir 是同步单元根目录（见 main.ts 的 migrateLibraryFolder）。
-  // 1.23：垃圾桶文件夹与数据库文件夹同级——data/library 与 data/trash
+  // workerData.libraryDir 是同步单元根目录（见 main.ts 的 migrateLibraryFolder）。
+  // 垃圾桶文件夹与数据库文件夹同级——data/library 与 data/trash
   const libraryDir=workerData.libraryDir||workerData.dataDir;
   repository=new Repository(libraryDir,String(workerData.trashDir||join(libraryDir,'..','trash')));
- // 1.204：没有文件夹就建「默认」；旧库的「未归类」按当前设置改名。
+ // 没有文件夹就建「默认」；旧库的「未归类」按当前设置改名。
  repository.ensureDefaultFolder();
   if(!repository.getSetting('importComplete')&&workerData.sourceVault&&existsSync(workerData.sourceVault))importVault(repository,workerData.sourceVault);
   study=await StudyService.create(repository);catalog=new CardCatalog(repository);directory=new DirectoryProjection(repository);
-  // 1.210：全新的资料库在默认文件夹里放一份使用引导（老库不受影响）
+  // 全新的资料库在默认文件夹里放一份使用引导（老库不受影响）
   seedDefaultLibrary(repository,id=>study.register(id));
   relations=new CardRelations(repository);port.postMessage({ready:true,info:repository.info()});
 })();
@@ -104,13 +104,13 @@ port.on('message',async({id,action,payload})=>{
         break;
       }
       case 'search':result=repository.search(payload.query);break;
-      // 1.169：卡片属性（标签）——列表 / 添加 / 删除
+      // 卡片属性（标签）——列表 / 添加 / 删除
       case 'cardTags':result=repository.query('SELECT tag FROM node_tags WHERE node_id=? ORDER BY tag').all(String(payload.id)).map(row=>String(row.tag));break;
-      // 1.211：leech 属性后面显示累计重来次数
+      // leech 属性后面显示累计重来次数
       case 'leechCount':result=study.leechLapses(String(payload.id));break;
       case 'addCardTag':{
         const tag=String(payload.tag||'').replace(/\s+/gu,' ').trim().slice(0,40);
-        // 1.210：hold / buried / leech 是内部状态，走 study 里带队列联动的那条路
+        // hold / buried / leech 是内部状态，走 study 里带队列联动的那条路
         if(tag)study.setCardTag(String(payload.id),tag,true);
         result=!!tag;break;
       }
@@ -127,7 +127,7 @@ port.on('message',async({id,action,payload})=>{
         break;
       }
       case 'nodeMetadata':{
-        // 1.6 ⑦：卡片 metadata 浅合并（目前只有启动配置 launch）。形状校验在这里做，
+        // 卡片 metadata 浅合并（目前只有启动配置 launch）。形状校验在这里做，
         // 真正的执行安全边界在 main.ts 的 'reading:launch'（spawn 时不经过 shell）。
         if(!payload||typeof payload.id!=='string'||!payload.patch||typeof payload.patch!=='object'||Array.isArray(payload.patch))throw Error(t('元数据无效。'));
         const patch=payload.patch as Record<string,unknown>;
@@ -174,7 +174,7 @@ port.on('message',async({id,action,payload})=>{
       case 'assetPurge':result=repository.purgeTrashedAsset(payload.id);break;
 
       case 'readingStatistics':result=study.readingStatistics(payload||{});break;
-      // 1.6 ⑥：FSRS 一键优化 + 留存度测算。只读复习历史，耗时较长（原生组件在 libuv 线程池跑），
+      // FSRS 一键优化 + 留存度测算。只读复习历史，耗时较长（原生组件在 libuv 线程池跑），
       // 因此是 async action；完成前 worker 仍能处理其他消息。
       case 'optimizeDeck':result=await optimizeParameters(repository,payload);break;
       case 'optimizeDeckApply':{
@@ -194,7 +194,7 @@ port.on('message',async({id,action,payload})=>{
           fsrsVersion:effective.fsrsVersion,fsrsWeights:trained.weights}});
         result=trained;break;
       }
-      // 1.19：逐牌组优化的进度来源——列出有复习记录的牌组及条数
+      // 逐牌组优化的进度来源——列出有复习记录的牌组及条数
       case 'optimizeDeckList':{
         const rows=repository.query(`SELECT n.folder_id AS folderId,count(*) AS count FROM review_log l JOIN nodes n ON n.id=l.node_id
           WHERE l.undone_at IS NULL AND n.deleted_at IS NULL AND n.folder_id IS NOT NULL
@@ -202,13 +202,13 @@ port.on('message',async({id,action,payload})=>{
         result=rows.map(row=>{const folder=repository.getNode(String(row.folderId));return {folderId:String(row.folderId),title:folder?folder.title:String(row.folderId),count:Number(row.count)};});
         break;
       }
-      // 1.15：留存度快速统计（秒级，不再训练）
+      // 留存度快速统计（秒级，不再训练）
       case 'retentionReport':result=retentionReport(repository,payload||{});break;
       case 'simulateWorkload':result=study.simulateWorkload(payload?.folderId??null);break;
       case 'importAnkiExport':
         result=importAnkiExport(repository,payload.bundle,payload.media,true);
         directory.invalidate();await study.hierarchyChanged();break;
-      // 1.9：桌面对等同步。ids=全部日志 id；ops=按 id 取回日志；apply=幂等落库 + 本地重放。
+      // 桌面对等同步。ids=全部日志 id；ops=按 id 取回日志；apply=幂等落库 + 本地重放。
       case 'syncIdsAll':result=collectSyncIds(repository,payload?.studyChanges===1);break;
       case 'syncOps':result=collectSyncOps(repository,payload?.ids||[]);break;
       case 'syncApplyOps':result=applySyncOps(repository,payload?.ops||[]);study.invalidate();break;
@@ -234,7 +234,7 @@ port.on('message',async({id,action,payload})=>{
         }
         result=outcome;break;
       }
-      // 1.193：冲突处理里的「删除卡片」——写一条删除版本再按正常删除进垃圾桶。
+      // 冲突处理里的「删除卡片」——写一条删除版本再按正常删除进垃圾桶。
       case 'syncDiscardContent':{
         const journal=contentJournal();
         const outcome=journal.discard(String(payload?.nodeId||''));
@@ -281,7 +281,7 @@ port.on('message',async({id,action,payload})=>{
       case 'recordForgotten':result=study.recordForgotten(payload.id);break;
       case 'resetMemory':result=study.resetMemory(payload.id);break;
       case 'reviewUndo':result=payload?.eventId?study.undo(payload.eventId):study.undo();break;
-      // 1.13：垃圾桶（软删除的卡片）。cleanup 在启动与定时任务里跑。
+      // 垃圾桶（软删除的卡片）。cleanup 在启动与定时任务里跑。
       case 'trashList':result=repository.trashList(Number(payload?.limit)||200);break;
       case 'trashRestore':result=repository.trashRestore(String(payload?.id));study.invalidate();break;
       case 'trashPurge':repository.trashPurge(String(payload?.id));result=true;study.invalidate();break;
