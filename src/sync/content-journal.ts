@@ -1,7 +1,7 @@
 import { t } from '../core/i18n';
 import type { Anchor, NodeKind } from '../core/model';
 import type { Repository } from '../data/database';
-import { projectStoredDocuments,type StoredDocuments } from '../data/document-storage';
+import { projectStoredDocuments,type StoredDocuments } from '../content/document';
 import { localContentAsset } from './content-assets';
 import { chooseContentVersion, CONTENT_BATCH_SIZE, inspectContentVersions, isVersionId, makeContentVersion,
   mergeContentVersions, validateContentVersion, type CardContent, type ContentVersion } from './content-versions';
@@ -89,6 +89,31 @@ export class ContentJournal {
     // 第一次记录到的版本是两边共同的基线，视为已确认；之后要等推送/写回确认。
     this.setLocalVersion(version,published||!before);
     return version;
+  }
+
+  /** 补齐所有尚未写入内容版本表的存活卡片（用于首次全量内容同步或手动触发全量检查）。 */
+  enqueueUntracked():number{
+    return this.repository.transaction(()=>{
+      return Number(this.repository.query(`
+        INSERT OR IGNORE INTO sync_content_dirty(node_id)
+        SELECT n.id FROM nodes n
+        LEFT JOIN sync_content_local l ON l.node_id=n.id
+        WHERE n.deleted_at IS NULL AND l.node_id IS NULL
+      `).run().changes)||0;
+    });
+  }
+
+  /** 将所有存活卡片重新入队核对并立即捕获成内容版本（已有相同内容版本的节点会幂等跳过）。 */
+  prepareFullSync():{queued:number;captured:number}{
+    const queued=this.repository.transaction(()=>Number(this.repository.query(`
+      INSERT OR IGNORE INTO sync_content_dirty(node_id)
+      SELECT id FROM nodes WHERE deleted_at IS NULL
+    `).run().changes)||0);
+    let captured=0;
+    while(this.repository.query('SELECT 1 FROM sync_content_dirty LIMIT 1').get()){
+      captured+=this.captureDirty().length;
+    }
+    return {queued,captured};
   }
 
   captureDirty(limit=500):ContentVersion[]{

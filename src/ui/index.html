@@ -16,6 +16,7 @@
 <div id="directory-pane">
 <details id="directory-tree-pane" open>
   <summary class="tree-heading"><span data-i18n>目录树</span><span class="tree-actions">
+      <button type="button" class="tree-search-button" data-i18n-attrs="aria-label title" aria-label="搜索卡片" title="搜索卡片" popovertarget="directory-search"></button>
       <button type="button" class="tree-sort-button" data-i18n-attrs="aria-label title" aria-label="排序" title="排序" popovertarget="directory-sort"></button>
       <button type="button" id="directory-toggle-all" aria-controls="tree"></button>
       <button type="button" class="tree-filter-button" data-i18n-attrs="aria-label title" aria-label="按卡片类型筛选" title="按卡片类型筛选" popovertarget="directory-filters"></button>
@@ -30,12 +31,17 @@
       <button type="button" data-i18n-attrs="aria-label title" data-type="topic" aria-label="只显示主题" aria-pressed="false" title="主题"></button>
       <button type="button" data-i18n-attrs="aria-label title" data-type="material" aria-label="只显示提取及其父级" aria-pressed="false" title="提取及其父级"></button>
       <button type="button" data-i18n-attrs="aria-label title" data-type="cloze" aria-label="只显示检测卡及其父级" aria-pressed="false" title="检测卡及其父级"></button>
+    </div>
+    <div class="tree-popup tree-search" id="directory-search" popover="auto" data-i18n-attrs="aria-label" aria-label="搜索卡片">
+      <input type="search" class="tree-search-input" autocomplete="off" spellcheck="false" data-i18n-attrs="aria-label placeholder" aria-label="搜索卡片" placeholder="搜索卡片…">
+      <div class="tree-search-results" role="listbox" data-i18n-attrs="aria-label" aria-label="搜索结果"></div>
     </div></summary>
   <div id="tree-viewport"><div id="tree" tabindex="-1"></div></div>
 </details>
 <div id="tree-divider" role="separator" aria-orientation="horizontal" aria-controls="directory-tree-pane card-relations" aria-valuemin="15" aria-valuemax="85" data-i18n-attrs="aria-label" aria-label="调整两棵树的高度" tabindex="0"></div>
 <details id="card-relations" open hidden>
   <summary class="tree-heading"><span data-i18n>记忆树</span><span class="tree-actions">
+      <button type="button" class="tree-search-button" data-i18n-attrs="aria-label title" aria-label="搜索卡片" title="搜索卡片" popovertarget="memory-search"></button>
       <button type="button" class="tree-sort-button" data-i18n-attrs="aria-label title" aria-label="排序" title="排序" popovertarget="memory-sort"></button>
       <button type="button" id="memory-toggle-all" aria-controls="memory-tree"></button>
       <button type="button" class="tree-filter-button" data-i18n-attrs="aria-label title" aria-label="按卡片类型筛选" title="按卡片类型筛选" popovertarget="memory-filters"></button>
@@ -50,6 +56,10 @@
       <button type="button" data-i18n-attrs="aria-label title" data-type="topic" aria-label="只显示主题" aria-pressed="false" title="主题"></button>
       <button type="button" data-i18n-attrs="aria-label title" data-type="material" aria-label="只显示提取及其父级" aria-pressed="false" title="提取及其父级"></button>
       <button type="button" data-i18n-attrs="aria-label title" data-type="cloze" aria-label="只显示检测卡及其父级" aria-pressed="false" title="检测卡及其父级"></button>
+    </div>
+    <div class="tree-popup tree-search" id="memory-search" popover="auto" data-i18n-attrs="aria-label" aria-label="搜索卡片">
+      <input type="search" class="tree-search-input" autocomplete="off" spellcheck="false" data-i18n-attrs="aria-label placeholder" aria-label="搜索卡片" placeholder="搜索卡片…">
+      <div class="tree-search-results" role="listbox" data-i18n-attrs="aria-label" aria-label="搜索结果"></div>
     </div></summary>
   <div class="relation-panel">
     <ul data-i18n-attrs="aria-label" id="memory-tree" class="relation-tree" aria-label="记忆关系"></ul>
@@ -77,10 +87,10 @@
 <section data-i18n-attrs="aria-label" id="study-controls" aria-label="复习操作" hidden>
 <div id="study-status-text" class="sr-only" aria-live="polite"></div>
 <div class="study-bottom-row">
-<div class="study-side study-left"><div data-i18n-attrs="aria-label" id="highlight-controls" role="group" aria-label="摘录高亮"><button data-i18n-attrs="title aria-label" data-highlight="extract" title="摘录高亮" aria-label="摘录高亮" aria-pressed="true"></button><button data-i18n-attrs="title aria-label" data-highlight="cloze" title="检测高亮" aria-label="检测高亮" aria-pressed="true"></button><button data-i18n-attrs="title aria-label" data-highlight="all" title="全部高亮开关" aria-label="全部高亮开关" aria-pressed="true"></button></div><button data-i18n id="study-edit" class="study-action" hidden>编辑</button></div>
+<div class="study-side study-left"><div data-i18n-attrs="aria-label" id="highlight-controls" role="group" aria-label="摘录高亮"><button data-i18n-attrs="title aria-label" data-highlight="extract" title="摘录高亮" aria-label="摘录高亮" aria-pressed="true"></button><button data-i18n-attrs="title aria-label" data-highlight="cloze" title="检测高亮" aria-label="检测高亮" aria-pressed="true"></button><button data-i18n-attrs="title aria-label" data-highlight="topic" title="主题高亮" aria-label="主题高亮" aria-pressed="true"></button><button data-i18n-attrs="title aria-label" data-highlight="all" title="全部高亮开关" aria-label="全部高亮开关" aria-pressed="true"></button></div><button data-i18n id="study-edit" class="study-action" hidden>编辑</button></div>
 <div class="study-center"><div id="study-counts"></div><div id="study-buttons"></div></div>
-<div class="study-side study-right"><button data-i18n data-i18n-attrs="title" id="card-tags" class="study-action" title="卡片属性（可检索）">卡片属性</button><div id="card-tags-panel" hidden><div id="card-tags-list"></div><input data-i18n-attrs="placeholder aria-label" id="card-tags-input" placeholder="输入属性后回车" aria-label="新增卡片属性"></div><button data-i18n data-i18n-attrs="title" id="study-priority" class="study-action" title="设置当前材料的优先级（1 高 / 9 低 / 0 绝对优先）" hidden>优先级</button><button data-i18n id="study-more" class="study-action" aria-haspopup="menu" aria-expanded="false">更多⌄</button>
-<div id="study-more-menu" role="menu" hidden><button data-i18n data-i18n-attrs="title" id="study-bury" role="menuitem" title="搁置到下一个日切点，明天重新出现（快捷键 =）">搁置</button><button data-i18n data-i18n-attrs="title" id="study-pause-review" role="menuitem" hidden title="暂停复习，卡片进入待办继续读">待办暂停</button><button data-i18n data-i18n-attrs="title" id="study-pause" role="menuitem" hidden title="不确定要不要留在 IR 时先收进暂存点，可稍后在浏览卡片取消或删除">留存判定</button><button data-i18n id="study-undo" role="menuitem">撤销上次</button><button data-i18n id="study-browse" role="menuitem">浏览卡片</button></div></div>
+<div class="study-side study-right"><button data-i18n data-i18n-attrs="title" id="card-tags" class="study-action" title="卡片标签（可检索）">卡片标签</button><button type="button" id="editor-mode" class="study-action" data-i18n data-i18n-attrs="title" title="切换 Markdown 显示模式">实时编辑</button><div id="card-tags-panel" hidden><div id="card-tags-list"></div><input data-i18n-attrs="placeholder aria-label" id="card-tags-input" placeholder="输入标签后回车" aria-label="新增卡片标签"></div><button data-i18n data-i18n-attrs="title" id="study-priority" class="study-action" title="设置当前材料的优先级（1 高 / 9 低 / 0 绝对优先）" hidden>优先级</button><button data-i18n id="study-more" class="study-action" aria-haspopup="menu" aria-expanded="false">更多⌄</button>
+<div id="study-more-menu" role="menu" hidden><button data-i18n id="menu-card-tags" role="menuitem" hidden>卡片标签</button><button data-i18n id="menu-editor-mode" role="menuitem" hidden>实时编辑</button><button data-i18n id="menu-priority" role="menuitem" hidden>优先级</button><button data-i18n data-i18n-attrs="title" id="study-bury" role="menuitem" title="搁置到下一个日切点，明天重新出现（快捷键 =）">搁置</button><button data-i18n data-i18n-attrs="title" id="study-pause-review" role="menuitem" hidden title="暂停复习，卡片进入待办继续读">待办暂停</button><button data-i18n data-i18n-attrs="title" id="study-pause" role="menuitem" hidden title="不确定要不要留在 IR 时先收进暂存点，可稍后在浏览卡片取消或删除">留存判定</button><button data-i18n id="study-undo" role="menuitem">撤销上次</button><button data-i18n id="study-browse" role="menuitem">浏览卡片</button></div></div>
 </div>
 </section>
 </div></div>

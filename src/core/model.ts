@@ -9,7 +9,7 @@ export interface Anchor {
   suffix: string;
   start?: number;
   section?: 'question' | 'answer';
-  highlight?:'extract'|'cloze';
+  highlight?:'extract'|'cloze'|'topic';
   // Ctrl+点击高亮跳转到对应的卡片，需要知道这条锚点指向哪个节点。
   nodeId?: string;
 }
@@ -88,6 +88,7 @@ export interface MemoryTreeCard {
   kind:Exclude<NodeKind,'folder'>;
   onPath:boolean;
   children:string[];
+  memoryChildren:string[];
   related:MemoryTreeLink[];
 }
 export interface MemoryTreeSnapshot {roots:string[];cards:MemoryTreeCard[]}
@@ -136,12 +137,14 @@ export interface Asset {
 export interface FolderCounts {new:number;learning:number;review:number;readingDue:number;fsrsDue:number}
 export interface StudyItem {
   id:string;token:string;kind:'reading'|'fsrs';isTest:boolean;title:string;state:'new'|'learning'|'review';
-  priority:number;revision:number;preview:Array<{rating:1|2|3|4;dueAt:number}>;
+  priority:number;revision:number;preview:Array<{rating:1|2|3|4;dueAt:number;days?:number}>;
   pushPreview?:{read:number;later:number};
 }
 export interface StudySnapshot {
   sessionId:string;folderId:string|null;folderTitle:string;mode:'cards'|'reading';item:StudyItem|null;
   completed:number;canUndo:boolean;nextDueAt:number|null;
+  /** 待办暂停撤销时，若期间排程已被其它操作改动，表示已按当前状态重新暂停。 */
+  pauseUndoStale?:boolean;
   postponed:number;   // 本次进入待办时 auto-postpone 延后的低优先级材料数
   counts:{new:number;learning:number;review:number;readingDue:number};
 }
@@ -191,8 +194,9 @@ export interface ReadingBridge {
   exportSnapshot(target?: string): Promise<{ ok: boolean; cancelled?: boolean; path?: string }>;
   importSnapshot(source?: string): Promise<{ ok: boolean; cancelled?: boolean }>;
   // 桌面对等同步。
-  syncConfigure(config: SyncState['config'] & { passphrase?: string; name?: string }): Promise<SyncState>;
+  syncConfigure(config: Partial<SyncState['config']> & { passphrase?: string; name?: string }): Promise<SyncState>;
   syncNow(): Promise<SyncState>;
+  syncFullContent(): Promise<SyncState & { prepared?: { queued: number; captured: number } }>;
   syncStatus(): Promise<SyncState>;
   syncTestPeer(address:string): Promise<{ok:boolean;message:string}>;
   syncConflicts(): Promise<{ count:number;items:SyncConflictItem[] }>;
@@ -200,6 +204,8 @@ export interface ReadingBridge {
   syncChooseContent(nodeId:string,heads:string[],selected:string):Promise<{status:string;reason?:string}>;
   /** 冲突处理时删除这张卡片（写删除版本，卡片进垃圾桶）。 */
   syncDiscardContent(nodeId:string):Promise<{status:string;reason?:string}>;
+  syncSettingsConflicts(): Promise<import('../settings/sync').SettingsConflict[]>;
+  syncResolveSettingsConflict(key:string,choice:'local'|'remote'): Promise<import('../settings/sync').SettingsSnapshot>;
   // 自动备份（快照拷到指定文件夹，按间隔自动执行）
   backupStatus(): Promise<BackupState>;
   backupConfigure(config: Partial<BackupConfig>): Promise<BackupState>;
@@ -225,11 +231,12 @@ export interface SyncState {
   deviceName?: string;
   hasPassphrase?: boolean;
   logs?: Array<{ at: number; peer: string; ok: boolean; pulled: number; pushed: number; ms: number; message: string }>;
-  status: { at: number; pulled: number; pushed: number; error: string; running?: boolean; lastOk?: number;
+  status: { at: number; pulled: number; pushed: number; error: string; running?: boolean; connected?: boolean; lastOk?: number; lastCheck?: number;
     lastCycle?:{pulled:number;pushed:number;ms:number;failed:number};
     logs?: Array<{ at: number; peer: string; ok: boolean; pulled: number; pushed: number; ms: number; message: string }> };
-  config: { enabled: boolean; port: number; peers: Array<{ name: string; address: string }> };
+  config: { enabled: boolean; startEnabled: boolean; port: number; peers: Array<{ name: string; address: string }> };
   deviceId: string;
+  settingsConflicts?: number;
 }
 
 // 终端创建参数。shell 白名单 cmd/powershell/pwsh/bash，缺省按平台选；

@@ -3,8 +3,10 @@ import { bindTreeFilters,bindTreeSort,sortTreeRows,TreeSelection,updateTreeFilte
 import type {CardRelationCandidate,CardRelationKey,MemoryTreeCard,MemoryTreeLink,MemoryTreeSnapshot} from '../core/model';
 
 interface Actions {
-  add(id:string,targetId:string):void;
+  add(id:string,targetId:string,kind:'related'|'memory'):void;
   open(id:string):void;
+  dragged():string[];
+  link(ids:string[],target:string,kind:'related'|'memory'):void;
   context(targetId:string,kind:MemoryTreeLink['kind'],relation:CardRelationKey|null,event:MouseEvent):void;
   error(message:string):void;
 }
@@ -12,7 +14,7 @@ interface Actions {
 export class CardRelationsPanel {
   private cardId:string|null=null;
   private readonly tree:HTMLUListElement;
-  private readonly heading:HTMLElement;
+  private readonly listViewport:HTMLElement;
   private roots:string[]=[];
   private readonly selection=new TreeSelection();
   private readonly expandButton:HTMLButtonElement;
@@ -35,7 +37,7 @@ export class CardRelationsPanel {
   constructor(private readonly host:HTMLDetailsElement,private readonly picker:HTMLDialogElement,
     private readonly actions:Actions){
     this.tree=host.querySelector('#memory-tree')!;
-    this.heading=host.querySelector('summary')!;
+    this.listViewport=host.querySelector('.relation-panel')!;
     this.expandButton=host.querySelector('#memory-toggle-all')!;
     this.filters=host.querySelector('#memory-filters')!;
     this.expandButton.onclick=event=>{
@@ -57,6 +59,28 @@ export class CardRelationsPanel {
       this.renderTree();
     });
     bindTreeSort(host.querySelector('#memory-sort')!,'ir.memoryTree.sort',sort=>{this.sort=sort;this.renderTree();});
+    const dropDestination=(event:DragEvent)=>{
+      const element=event.target as HTMLElement;
+      const row=element.closest<HTMLElement>('.tree-row[data-card-id]');
+      const branch=element.closest<HTMLElement>('li[data-memory-id]');
+      const target=row?.dataset.cardId??branch?.dataset.memoryId??this.cardId;
+      const ids=this.actions.dragged().filter(id=>id!==target);
+      return target&&ids.length?{target,ids,kind:row||branch?'memory' as const:'related' as const,element:row??branch??this.listViewport}:null;
+    };
+    let indicator:HTMLElement|null=null;
+    const clear=()=>{indicator?.classList.remove('is-drop-target');indicator=null;};
+    this.listViewport.ondragover=event=>{
+      const drop=dropDestination(event);clear();
+      if(!drop)return;
+      event.preventDefault();
+      indicator=drop.element;indicator.classList.add('is-drop-target');
+    };
+    this.listViewport.ondragleave=clear;
+    this.listViewport.ondrop=event=>{
+      const drop=dropDestination(event);clear();
+      if(!drop)return;
+      event.preventDefault();this.actions.link(drop.ids,drop.target,drop.kind);
+    };
     this.input=picker.querySelector('input')!;
     this.results=picker.querySelector('.relation-results')!;
     // 记忆树空白处右键不做任何事（建子卡片要右键某张卡片作为父级）。
@@ -73,7 +97,7 @@ export class CardRelationsPanel {
     const {roots,cards}=await window.reading.request<MemoryTreeSnapshot>('memoryTree',{id});
     if(version!==this.showVersion)return;
     const changed=id!==this.cardId;
-    const scrollTop=this.host.scrollTop;
+    const scrollTop=this.listViewport.scrollTop;
     const wasSelected=this.selection.includes(id)&&this.selection.anchor===id;
     if(changed&&!wasSelected)this.selection.select(id);
     const sameTree=roots.length===this.roots.length&&roots.every((root,index)=>root===this.roots[index]);
@@ -90,7 +114,7 @@ export class CardRelationsPanel {
     this.roots=roots;
     this.cards=new Map(cards.map(card=>[card.id,card]));
     this.renderTree();
-    this.host.scrollTop=sameTree?scrollTop:0;
+    this.listViewport.scrollTop=sameTree?scrollTop:0;
     if(changed||!sameTree)this.scrollToCurrent();
   }
 
@@ -132,7 +156,7 @@ export class CardRelationsPanel {
   }
 
   private setAllExpanded(expanded:boolean){
-    const scrollTop=this.host.scrollTop;
+    const scrollTop=this.listViewport.scrollTop;
     for(const card of this.cards.values()){
       if(!card.children.length&&!card.related.length)continue;
       if(expanded)this.collapsed.delete(card.id);
@@ -140,7 +164,7 @@ export class CardRelationsPanel {
     }
     this.saveCollapsed();
     this.renderTree();
-    this.host.scrollTop=scrollTop;
+    this.listViewport.scrollTop=scrollTop;
     if(expanded)this.scrollToCurrent();
   }
 
@@ -160,7 +184,8 @@ export class CardRelationsPanel {
   private appendCard(list:HTMLUListElement|DocumentFragment,id:string,parentId?:string){
     const card=this.displayed.get(id)!;
     const {item,row,toggle}=this.makeRow(card.title,card.kind);
-    const relation:CardRelationKey|null=parentId?{parentId,childId:id,kind:'memory'}:null;
+    const manual=parentId&&this.displayed.get(parentId)?.memoryChildren.includes(id);
+    const relation:CardRelationKey|null=parentId&&manual?{parentId,childId:id,kind:'memory'}:null;
     item.dataset.memoryId=id;
     this.bindCard(row,id,card.kind,relation);
     list.append(item);
@@ -208,6 +233,7 @@ export class CardRelationsPanel {
   private bindCard(row:HTMLElement,id:string,kind:MemoryTreeLink['kind'],relation:CardRelationKey|null){
     const key=relation?.kind==='related'?JSON.stringify([relation.parentId,id]):id;
     row.dataset.selectionKey=key;
+    row.dataset.cardId=id;
     row.onclick=event=>{
       if((event.target as HTMLElement).closest('.tree-toggle'))return;
       if(event.shiftKey){
@@ -218,7 +244,9 @@ export class CardRelationsPanel {
       if(event.ctrlKey||event.metaKey){this.selection.toggle(key);this.markSelection();return;}
       this.selection.select(key);
       this.markSelection();
-      this.actions.open(id);
+    };
+    row.ondblclick=event=>{
+      if(!event.shiftKey&&!event.ctrlKey&&!event.metaKey&&!(event.target as HTMLElement).closest('.tree-toggle'))this.actions.open(id);
     };
     row.oncontextmenu=event=>{event.preventDefault();this.actions.context(id,kind,relation,event);};
   }
@@ -242,7 +270,7 @@ export class CardRelationsPanel {
       this.markSelection();
       this.updateExpandButton();
     };
-    toggle.onclick=flip;
+    toggle.onclick=event=>{if(event.detail<=1)flip();};
     update();
   }
 
@@ -251,18 +279,18 @@ export class CardRelationsPanel {
     const selected=this.tree.querySelector<HTMLElement>('.tree-label[aria-current="true"]');
     if(selected?.closest('ul[hidden]'))return;
     if(!selected)return;
-    const bounds=this.host.getBoundingClientRect(),row=selected.getBoundingClientRect();
-    const top=bounds.top+this.heading.offsetHeight;
-    if(row.top<top)this.host.scrollTop+=row.top-top;
-    else if(row.bottom>bounds.bottom)this.host.scrollTop+=row.bottom-bounds.bottom;
+    const bounds=this.listViewport.getBoundingClientRect(),row=selected.getBoundingClientRect();
+    if(row.top<bounds.top)this.listViewport.scrollTop+=row.top-bounds.top;
+    else if(row.bottom>bounds.bottom)this.listViewport.scrollTop+=row.bottom-bounds.bottom;
   }
 
-  openPicker(id:string){
+  openPicker(id:string,kind:'related'|'memory'='related'){
+    this.picker.setAttribute('aria-label',t(kind==='memory'?'关联检测子卡片':'关联卡片'));
     this.input.value='';this.results.replaceChildren();
     const search=()=>{
       clearTimeout(this.searchTimer);
       const version=++this.searchVersion;
-      this.searchTimer=setTimeout(()=>void this.search(id,version),120);
+      this.searchTimer=setTimeout(()=>void this.search(id,version,kind),120);
     };
     this.input.oninput=search;
     this.input.onkeydown=event=>{
@@ -279,16 +307,16 @@ export class CardRelationsPanel {
     this.picker.showModal();this.input.focus();search();
   }
 
-  private async search(id:string,version:number){
+  private async search(id:string,version:number,kind:'related'|'memory'){
     try{
-      const cards=await window.reading.request<CardRelationCandidate[]>('searchRelatedCards',{id,query:this.input.value});
+      const cards=await window.reading.request<CardRelationCandidate[]>(kind==='memory'?'searchPrerequisites':'searchRelatedCards',{id,query:this.input.value});
       if(!this.picker.open||version!==this.searchVersion)return;
       this.results.replaceChildren();
       this.activeResult=cards.length?0:-1;
       for(const [index,card] of cards.entries()){
         const row=document.createElement('button');row.type='button';row.textContent=card.path;
         row.classList.toggle('is-active',index===0);
-        row.onclick=()=>{this.picker.close();this.actions.add(id,card.id);};
+        row.onclick=()=>{this.picker.close();this.actions.add(id,card.id,kind);};
         this.results.append(row);
       }
       if(!cards.length)this.results.textContent=t('没有匹配的卡片');

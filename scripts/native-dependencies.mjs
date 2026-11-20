@@ -1,4 +1,4 @@
-import {cpSync,mkdirSync,existsSync,readFileSync} from 'node:fs';
+import {cpSync,mkdirSync,existsSync,readFileSync,rmSync} from 'node:fs';
 import {join,resolve} from 'node:path';
 import {createRequire} from 'node:module';
 export function copyNativeDependencies(appDirectory){
@@ -25,4 +25,17 @@ export function copyNativeDependencies(appDirectory){
  // 内嵌终端 PTY（预编译多平台包，含 electron/node 各 ABI 的 prebuilds）。
  copy('@homebridge/node-pty-prebuilt-multiarch',resolve('package.json'),false,true);
  return [...done];
+}
+
+/**
+ * 交叉打包会把另一平台的原生产物也带进来（Windows 上装的是 win32 变体，
+ * 交叉打 Linux 包时又下载了 linux 变体）。发布包里只保留目标平台需要的部分，
+ * 免得安装包体积变大、也避免混入另一平台的可执行文件。
+ * 保留 WASI 兜底产物：napi-rs 在缺少对应平台包时会退到它。
+ */
+export function pruneForeignPlatforms(appDirectory,platform){
+ const foreign=platform==='win32'
+  ?['@img/sharp-linux-x64','@img/sharp-libvips-linux-x64','@open-spaced-repetition/binding-linux-x64-gnu']
+  :['@img/sharp-win32-x64','@open-spaced-repetition/binding-win32-x64-msvc'];
+ for(const name of foreign)rmSync(join(appDirectory,'node_modules',name),{recursive:true,force:true});
 }

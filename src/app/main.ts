@@ -18,6 +18,7 @@ import { createSyncService } from '../sync/runtime';
 import { existingLibrary, readStartupConfiguration, saveStartupConfiguration, showOnboarding } from './onboarding';
 import { LocalUiState } from './local-state';
 import { DEFAULT_LOCALE, getLocale, parseLocale, setLocale, t } from '../core/i18n';
+import { ACTION_NAMES } from '../data/action-names';
 
 // Windows 11 的「自动隐藏滚动条」会让 Chromium 用 overlay 滚动条——鼠标悬停时滑块会临时变宽，
 // 盖住旁边内容。这里关掉 overlay 滚动条，让样式表里的固定宽度滚动条始终生效。
@@ -87,9 +88,10 @@ async function call<T=any>(action:string,payload?:unknown):Promise<T> {
   const client=activeDatabase();
   if(action!=='syncContentApply'){
     const result=await client.request<T>(action,payload);
-    if(['syncApplyOps','syncReplayPending','syncApplyDecisions'].includes(action)&&window&&!window.isDestroyed()){
-      const update=result as {applied?:number;conflicts?:unknown[]};
-      if(update.applied||update.conflicts?.length)window.webContents.send('reading:synced-content',false);
+    if(['syncApplyOps','syncReplayPending','syncApplyDecisions','syncSettingsReceive','syncSettingsResolve'].includes(action)&&window&&!window.isDestroyed()){
+      const update=result as {applied?:number|unknown[];conflicts?:unknown[]};
+      const hasApplied=Array.isArray(update?.applied)?update.applied.length>0:Boolean(update?.applied);
+      if(hasApplied||update?.conflicts?.length||action==='syncSettingsResolve')window.webContents.send('reading:synced-content',false);
     }
     return result;
   }
@@ -172,12 +174,7 @@ async function closeDatabase():Promise<void>{
   await client?.close();
 }
 
-const allowed=new Set(['info','children','directoryBranches','get','path','anchors','save','create','rename','move','restoreMove','remove','simulateWorkload',
-  'moveCards','restoreMovedCards','setStudyEnabledBatch','restoreStudyEnabledBatch',
-  'createMemoryChild','cardRelations','memoryTree','searchRelatedCards','addRelatedCard','removeCardRelation',
-  'searchPrerequisites','setPrerequisite','reviewAgainDependents','recordForgotten','resetMemory','saveImageOcclusion','undoImageOcclusion',
-  'undoCreation','cardTags','addCardTag','removeCardTag','search','settingGet','settingSet','asset','folders','configGet','configSave','folderCounts','nodeStudy',
-  'setPriority','setStudyEnabled','buryCard','setCardHold','reviewStart','reviewStop','reviewRefresh','reviewGrade','reviewUndo','catalog','directoryPath','deckConfig','deckConfigSave','setPushEnabled','setReadingPosition','changeKind','cardInfo','statistics','readingStatistics','assetUsage','assetTrashUnused','assetTrashList','assetRestore','assetPurge','nodeMetadata','optimizeDeck','optimizeDeckApply','trashList','trashRestore','trashPurge','trashCleanup','retentionReport','optimizeDeckList','cardWindow','openPath','pickFileLink','openFileLink','openImageAsset','copyImageAsset','revealAttachment']);
+const allowed=new Set<string>(ACTION_NAMES);
 // 本机界面状态的读写（state/ui-state.json，各机器独立）。
 ipcMain.handle('reading:ui-state-get',(event,key:unknown)=>{
   if(!isOurWindow(event.sender)||typeof key!=='string'||!key||key.length>64)throw Error(t('无效的本机状态请求。'));
@@ -273,10 +270,22 @@ ipcMain.on('reading:window',(event,action)=>{
 // 浏览卡片里双击一行 → 这里新建一个 BrowserWindow，用 ?card=<id> 告诉渲染层"只编辑这张卡"。
 // 子窗口与主窗口共用同一个 worker（同一份数据库），界面走 solo 布局（隐藏目录树与功能栏）。
 // 子窗口统一走这一条路径——卡片编辑（?card=）、浏览卡片（?browser=1）、添加卡片（?add=1）。
+// 2026-11-21：同一个窗口要显示「另一种内容」（例如浏览窗口已被打开，再从设置点「打开冲突文件」）
+// 时，必须按新参数重新加载；以前只 show() 一下就返回，结果仍然停在原来的普通浏览列表，
+// 冲突文件看起来像「一张都没有」。
+const childWindowQueries=new Map<string,string>();
 function openChildWindow(key:string,query:Record<string,string>,size:{width:number;height:number;minWidth:number;minHeight:number}){
   for(const child of cardWindows){if(child.isDestroyed()){cardWindows.delete(child);continue;}}
   const existing=[...cardWindows].find(child=>child.getTitle()===key);
-  if(existing&&!existing.isDestroyed()){existing.show();existing.focus();return;}
+  const signature=JSON.stringify(query);
+  if(existing&&!existing.isDestroyed()){
+    existing.show();existing.focus();
+    if(childWindowQueries.get(key)!==signature){
+      childWindowQueries.set(key,signature);
+      void existing.loadFile(join(__dirname,'index.html'),{query:{...query,locale:getLocale()}});
+    }
+    return;
+  }
   // 子窗口先把深色窗框显示出来（窗口本身很便宜），内容加载期间不再是"点了没反应"。
   const child=new BrowserWindow({...size,frame:false,backgroundColor:'#1e1e1e',show:false,
     webPreferences:{preload:join(__dirname,'preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,
@@ -291,8 +300,9 @@ function openChildWindow(key:string,query:Record<string,string>,size:{width:numb
     event.preventDefault();
     child.webContents.send('reading:close-requested');
   });
-  child.on('closed',()=>cardWindows.delete(child));
+  child.on('closed',()=>{cardWindows.delete(child);childWindowQueries.delete(key);});
   cardWindows.add(child);
+  childWindowQueries.set(key,signature);
   void child.loadFile(join(__dirname,'index.html'),{query:{...query,locale:getLocale()}});
   return child;
 }
@@ -437,7 +447,7 @@ else{
     if(startup?.initialOptions){
       const {backup,sync}=startup.initialOptions;
       await call('settingSet',{key:'backupSettings',value:{...defaultBackupConfig,enabled:backup,folder:join(dataDir,'backups')}});
-      await call('settingSet',{key:'syncSettings',value:{enabled:sync,port:38641,peers:[]}});
+      await call('settingSet',{key:'syncSettings',value:{enabled:sync,startEnabled:sync,port:38641,peers:[]}});
       saveStartupConfiguration(startupFile,{dataDir});
     }
     const syncService=createSyncService({

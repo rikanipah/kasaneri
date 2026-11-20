@@ -2,10 +2,13 @@ import { t } from '../core/i18n';
 import {existsSync,readdirSync,rmSync,statSync,writeFileSync} from 'node:fs';
 import {dirname,join} from 'node:path';
 import type {Material} from '../core/model';
-import {projectStoredDocuments,type StoredDocuments} from './document-storage';
+import {projectStoredDocuments,type StoredDocuments} from '../content/document';
 import type {Repository} from './database';
 
-type TrashRepository=Pick<Repository,'trashDir'|'query'|'transaction'|'getNode'|'ensureDefaultFolder'>;
+type TrashRepository=Pick<Repository,'trashDir'|'query'|'transaction'|'getNode'|'ensureDefaultFolder'|'move'|'setSetting'|'getSetting'>;
+
+type PromotedChildren={parentId:string|null;ids:string[];reviewEnabled:number|null;readingEnabled:number|null};
+const promotionKey=(id:string)=>'trashPromotedChildren:'+id;
 
 export class TrashStore {
   constructor(private readonly repository:TrashRepository){}
@@ -36,12 +39,25 @@ export class TrashStore {
     this.softDelete(node.id);
     this.recordTrash(node.id,node.parentId,Date.now());
   }
-  remove(id:string): {parentId:string|null;destinationId:string|null;children:number} {
+  remove(id:string,mode:'single'|'branch'='branch'): {parentId:string|null;destinationId:string|null;children:number} {
     return this.repository.transaction(()=>{
       const node=this.repository.getNode(id);
       if(!node)throw Error(t('项目已删除。'));
       const children=Number(this.repository.query('SELECT count(*) AS n FROM nodes WHERE parent_id=? AND deleted_at IS NULL').get(id)!.n);
       const stamp=Date.now();
+      if(mode==='single'&&node.kind==='folder')throw Error(t('仅删除此卡只适用于卡片。'));
+      if(mode==='single'){
+        const ids=this.repository.query('SELECT id FROM nodes WHERE parent_id=? AND deleted_at IS NULL ORDER BY position,id').all(id).map(row=>String(row.id));
+        const enabled=(table:'review_cards'|'reading_state')=>{
+          const row=this.repository.query(`SELECT enabled FROM ${table} WHERE node_id=?`).get(id);
+          return row?Number(row.enabled):null;
+        };
+        const promotion:PromotedChildren={parentId:node.parentId,ids,reviewEnabled:enabled('review_cards'),readingEnabled:enabled('reading_state')};
+        for(const child of ids)this.repository.move(child,node.parentId,{expectedParentId:id});
+        this.repository.setSetting(promotionKey(id),promotion);
+        this.softDelete(id);this.recordTrash(id,node.parentId,stamp);
+        return {parentId:node.parentId,destinationId:node.parentId,children};
+      }
       // 删除＝软删除 + trash 记录 + 磁盘快照。
       // 一次操作共用同一个 stamp，trash.parent_id 记「这次删除的根节点」作为批次标记，
       // 恢复时按这个标记把整棵子树一起取回（节点之间的 parent_id 删除时不动，树形原样保留）。
@@ -143,7 +159,8 @@ export class TrashStore {
       }
       if(!row||!row.deleted_at||!entry)throw Error(t('垃圾桶里没有这张卡片。'));
       // 恢复文件夹/带下级的卡片时，整棵子树一起回来。
-      const snapshots=this.restoreBatch(id,now,at);
+      const promotion=this.repository.getSetting(promotionKey(id)) as PromotedChildren|null;
+      const snapshots=promotion?[]:this.restoreBatch(id,now,at);
       // 原父级也被删/不存在时，放回「默认」，避免恢复到看不见的地方；
       // 顶级文件夹原本就在根上，恢复时放回根，而不是塞进「默认」。
       const parent=row.parent_id?this.repository.query('SELECT id,deleted_at FROM nodes WHERE id=?').get(String(row.parent_id)):null;
@@ -151,7 +168,15 @@ export class TrashStore {
         ?(parent&&!parent.deleted_at?String(row.parent_id):this.repository.ensureDefaultFolder())
         :(String(row.kind)==='folder'?null:this.repository.ensureDefaultFolder());
       this.repository.query('UPDATE nodes SET deleted_at=NULL,parent_id=?,updated_at=? WHERE id=?').run(parentId,now,id);
-      this.reenable(id,String(row.kind));
+      if(promotion){
+        for(const childId of promotion.ids){
+          if(this.repository.getNode(childId)?.parentId===promotion.parentId)
+            this.repository.move(childId,id,{expectedParentId:promotion.parentId});
+        }
+        if(promotion.reviewEnabled!==null)this.repository.query('UPDATE review_cards SET enabled=?,revision=revision+1 WHERE node_id=?').run(promotion.reviewEnabled,id);
+        if(promotion.readingEnabled!==null)this.repository.query('UPDATE reading_state SET enabled=?,revision=revision+1 WHERE node_id=?').run(promotion.readingEnabled,id);
+        this.repository.query('DELETE FROM settings WHERE key=?').run(promotionKey(id));
+      }else this.reenable(id,String(row.kind));
       this.repository.query('UPDATE trash SET restored_at=? WHERE node_id=?').run(at,id);
       return {parentId,title:String(row.title),snapshots:[...snapshots,id]};
     });
@@ -184,7 +209,10 @@ export class TrashStore {
           for(const match of text.matchAll(/asset:([a-f0-9]{64})/g))hashes.add(match[1]!);
         }
       }
-      for(const target of targets)this.repository.query('DELETE FROM nodes WHERE id=?').run(target);
+      for(const target of targets){
+        this.repository.query('DELETE FROM settings WHERE key=?').run(promotionKey(target));
+        this.repository.query('DELETE FROM nodes WHERE id=?').run(target);
+      }
       this.purgeOrphanAssets(hashes);
       this.repository.query(`UPDATE trash SET purged_at=? WHERE node_id IN (${targetIds})`).run(Date.now(),ids);
       return targets;

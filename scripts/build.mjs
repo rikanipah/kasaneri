@@ -47,7 +47,9 @@ export async function bundle(entry,output,platform){
    builder.onLoad({filter:/.*/,namespace:'host'},args=>{
     const path=files.get(args.path);
     const extension=extname(path);
-    return {contents:readFileSync(path,'utf8'),loader:extension==='.json'?'json':extension==='.ts'?'ts':'js'};
+    // .md 是引导内容的正文，按文本内联进包里，安装包不需要另外带这些文件。
+    const loader=extension==='.json'?'json':extension==='.ts'?'ts':extension==='.md'?'text':'js';
+    return {contents:readFileSync(path,'utf8'),loader};
    });
   }}]
  });

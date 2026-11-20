@@ -94,9 +94,11 @@ export class CardBrowser {
   private columnWeights:Partial<Record<ColumnKey,number>>={};
   private hiddenColumns=new Set<ColumnKey>();
   private dragColumn:ColumnKey|null=null;
+  // 2026-11-17：标题行（窗口标题栏里的「共 N 张 · 已选 M 张」）
+  private readonly title:HTMLElement;
   constructor(private host:HTMLElement,private rule:HTMLElement,private filters:HTMLElement,private actions:BrowserActions){
     // 1.6 ①②：工具栏不再放排序下拉框，排序改由表头点击完成（用户 01:25 的要求）。
-    host.innerHTML=`<div class="browser-heading"><h2 data-i18n>浏览卡片</h2><span id="browser-total"></span></div>
+    host.innerHTML=`
       <div class="browser-toolbar"><input data-i18n-attrs="aria-label placeholder" id="browser-query" type="search" aria-label="搜索卡片" placeholder="搜索标题、正文或答案…（回车搜索）" autocomplete="off"></div>
       <div class="browser-body"><div id="browser-table-pane"><table id="browser-table-head" aria-hidden="true"><colgroup id="browser-head-cols"></colgroup><thead><tr id="browser-head"></tr></thead></table><div id="browser-table-scroll"><div id="browser-table-canvas"><table data-i18n-attrs="aria-label" id="browser-table" aria-label="卡片列表"><colgroup id="browser-body-cols"></colgroup><tbody id="browser-rows"></tbody></table></div></div><div id="browser-scrollbar" aria-hidden="true"><div id="browser-scrollbar-thumb"></div></div></div><div data-i18n-attrs="aria-label" id="browser-editor-rule" role="separator" aria-label="调整编辑区宽度" aria-orientation="vertical" tabindex="0"></div><aside data-i18n-attrs="aria-label" id="browser-editor" aria-label="卡片编辑区" hidden>
         <div data-i18n-attrs="aria-label" class="browser-editor-toolbar" role="toolbar" aria-label="文本格式">
@@ -111,7 +113,8 @@ export class CardBrowser {
           <button data-i18n-attrs="title" type="button" data-prefix="1. " title="有序列表">1.</button>
           <button data-i18n-attrs="title" type="button" data-link="1" title="链接">🔗</button>
         </div>
-        <div class="browser-editor-head"><input data-i18n-attrs="aria-label placeholder" id="browser-editor-title" aria-label="卡片标题" placeholder="卡片标题"></div>
+        <details class="browser-editor-section" id="browser-editor-title-section" open><summary data-i18n>标题</summary>
+          <textarea rows="1" data-i18n-attrs="aria-label placeholder" id="browser-editor-title" aria-label="卡片标题" placeholder="卡片标题"></textarea></details>
 
         <details class="browser-editor-section" id="browser-editor-front" open><summary data-i18n>正面</summary>
           <textarea id="browser-editor-content" rows="10" spellcheck="false"></textarea></details>
@@ -119,8 +122,14 @@ export class CardBrowser {
           <textarea id="browser-editor-answer" rows="6" spellcheck="false"></textarea></details>
         <div class="browser-editor-hint" id="browser-editor-hint"></div>
       </aside></div>
-      <div class="browser-footer"><button data-i18n id="browser-refresh">刷新</button><button data-i18n id="browser-enabled" disabled>暂停</button><button data-i18n id="browser-resume" hidden>加入 / 恢复</button><button data-i18n id="browser-move" disabled>移至…</button><button data-i18n id="browser-delete" class="danger" disabled>删除</button><button data-i18n id="browser-info" disabled>卡片信息</button><span class="browser-hint" id="browser-selection" aria-live="polite"></span></div>`;
+      <div class="browser-footer"><button data-i18n id="browser-refresh">刷新</button><button data-i18n id="browser-add">添加卡片</button><button data-i18n id="browser-enabled" disabled>暂停</button><button data-i18n id="browser-resume" hidden>加入 / 恢复</button><button data-i18n id="browser-move" disabled>移至…</button><button data-i18n id="browser-delete" class="danger" disabled>删除</button><button data-i18n id="browser-info" disabled>卡片信息</button><span class="browser-hint" id="browser-selection" aria-live="polite"></span></div>`;
     localizeMarkup(host);
+    // 2026-11-17：计数放到窗口标题行；只在独立浏览窗口里加，主窗口不加（否则会和面包屑挤在一起）。
+    const solo=new URLSearchParams(window.location.search).get('browser')==='1';
+    const topbar=solo?window.document.getElementById('topbar'):null;
+    this.title=window.document.createElement('div');
+    this.title.id='browser-title';
+    if(topbar)topbar.prepend(this.title);
     // 打开浏览页时把焦点给搜索框，直接就能打字搜索
     queueMicrotask(()=>{(this.element('browser-query') as HTMLInputElement).focus();});
     // 搜索改成回车才查——边打边查会在拼音还拼着的时候就搜一轮，结果乱跳。
@@ -143,6 +152,7 @@ export class CardBrowser {
     // —— 表头点击排序；右缘拖拽调列宽；表头可拖动换顺序、右键勾选显示哪些列。
     this.renderHead();
     this.bindRowEvents();
+    this.bindEditorWheel();
     // 自绘滚动条——原生滑块在几千行时会被压成几像素，抓不住；
     // 这里固定滑块最小 64px，拖动用 pointer 自己算 scrollTop，原生滚动条隐藏。
     const tableScroll=this.element('browser-table-scroll');
@@ -199,6 +209,11 @@ export class CardBrowser {
     this.syncScrollbar=syncBar;
     this.updateSortMarkers();
     this.element('browser-refresh').onclick=()=>void this.refresh();
+    // 2026-11-19：浏览卡片底部也能直接添加卡片（与主窗口入口等效，带上当前选中卡片所在的文件夹）
+    this.element('browser-add').onclick=()=>{
+      const node=this.selectedCards().find(item=>!item.deletedAt);
+      void window.reading.openAddCardWindow(node?.folderId??null).catch(()=>{});
+    };
     this.element('browser-enabled').onclick=()=>{
       const nodes=this.selectedCards();
       if(nodes.length)void this.changeEnabled(nodes,nodes.length===1&&!this.enabled(nodes[0]!));
@@ -531,7 +546,8 @@ export class CardBrowser {
       this.editorId=id;this.editorRevision=node.revision;
       this.editorSaved={content:node.content,answer:node.answer};
       this.element('browser-editor').hidden=false;
-      (this.element('browser-editor-title') as HTMLInputElement).value=node.title;
+      (this.element('browser-editor-title') as HTMLTextAreaElement).value=node.title;
+      this.fitTitle();
       (this.element('browser-editor-content') as HTMLTextAreaElement).value=node.content;
       (this.element('browser-editor-answer') as HTMLTextAreaElement).value=node.answer;
       this.mountAttachmentEditor(node,'content');this.mountAttachmentEditor(node,'answer');
@@ -539,6 +555,8 @@ export class CardBrowser {
       this.revealMatch((this.element('browser-query') as HTMLInputElement).value,node.content,node.answer);
       // 像 Anki 一样按「正面/背面」两个可折叠区显示；非检测卡只显示正面
       this.element('browser-editor-back').hidden=node.kind!=='cloze';
+      // 2026-11-17：提取卡/主题卡没有背面，正面的框要占满剩余高度
+      this.element('browser-editor').classList.toggle('no-back',node.kind!=='cloze');
       this.element('browser-editor-hint').textContent=t('改动自动保存（标题也可以直接改）；双击行可用新窗口编辑');
       this.bindTitleEditing(id);
       // Anki 式即时编辑——正文/答案改完自动保存，不用点「保存」
@@ -574,11 +592,19 @@ export class CardBrowser {
       return;
     }
   }
+  /** 2026-11-17：标题框随内容增高（换行显示，不再横向截断）。 */
+  private fitTitle(){
+    const field=this.element('browser-editor-title') as HTMLTextAreaElement|null;
+    if(!field)return;
+    field.style.height='auto';
+    field.style.height=Math.max(32,field.scrollHeight)+'px';
+  }
   /** 编辑区顶部的标题可直接改，停手 500ms 自动保存，并同步表格行与目录树。 */
   private bindTitleEditing(id:string){
-    const input=this.element('browser-editor-title') as HTMLInputElement;
+    const input=this.element('browser-editor-title') as HTMLTextAreaElement;
     clearTimeout(this.titleTimer);
     input.oninput=()=>{
+      this.fitTitle();
       clearTimeout(this.titleTimer);
       this.titleTimer=setTimeout(()=>void this.actions.run(async()=>{
         const value=input.value.trim();
@@ -645,10 +671,12 @@ export class CardBrowser {
   private highlightFilters(){for(const button of this.filters.querySelectorAll<HTMLButtonElement>('button')){
     const group=button.dataset.group,value=button.dataset.value??'';
     // 牌组空值（「全部牌组」）在没有牌组筛选时高亮；类型/状态按是否选中高亮，可同时多个。
+    // 2026-11-17：牌组方框跟着「当前筛选」走。打开浏览卡片时筛选会先设成该卡片所在牌组，
+    // 所以默认聚焦在那张卡的位置；之后点别的牌组，方框也跟过去。
     const active=group==='folder'?(this.folderId===null?value==='':this.folderId===value)
       :group==='kind'?this.kinds.has(value as NodeKind):this.statuses.has(value as CatalogStatus);
     button.classList.toggle('is-active',active);button.setAttribute('aria-pressed',String(active));
-    button.classList.toggle('is-current',group==='folder'&&value===this.activeFolder);
+    button.classList.remove('is-current');
   }}
   open(status?:'conflict',initialId?:string|null){return this.actions.run(async()=>{
     await this.actions.beforeOpen();this.activeFolder=null;this.visible=true;this.host.hidden=false;this.rule.hidden=false;this.filters.hidden=false;this.actions.visibility(true);
@@ -694,10 +722,13 @@ export class CardBrowser {
     if(status==='conflict')await this.loadConflicts().catch(()=>{});
     else void this.loadConflicts().then(()=>{if(this.visible)this.render();}).catch(()=>{});
     await this.reload();
+    // 2026-11-21：冲突视图必须横跨所有牌组。以前这里会因为「默认选中某张卡」把牌组筛到那一支，
+    // 结果别的牌组里的冲突卡片被藏起来，看起来像「一张冲突都没有」。
+    const conflictView=this.statuses.has('conflict');
     // 打开时默认选中主窗口目录树里那张卡（并滚到它、在右侧显示）
     // 如果这张卡被当前筛选挡住了，先清掉筛选再找，保证一定能选中
     let target=initialId&&this.items.some(item=>item.id===initialId)?initialId:this.activeId;
-    if(initialId&&target!==initialId){
+    if(!conflictView&&initialId&&target!==initialId){
       this.statuses.clear();this.kinds.clear();this.folderId=null;
       (this.element('browser-query') as HTMLInputElement).value='';
       this.highlightFilters();
@@ -706,8 +737,24 @@ export class CardBrowser {
     }
     if(target){
       this.activeId=target;this.selectedIds=new Set([target]);
-      this.scrollToItem(target);this.highlight();
+      // 2026-11-17：左侧牌组跟着这张卡片定位，并把列表直接筛到这个牌组
+      //（标题里的「共 N 张」随之变成该牌组的数量）；万一筛完找不到它，退回不筛选。
+      // 2026-11-21：冲突视图不缩牌组——冲突卡片本来就分散在不同牌组。
+      const targetFolder=this.items.find(item=>item.id===target)?.folderId??null;
+      if(!conflictView&&targetFolder&&this.folderId!==targetFolder){
+        this.folderId=targetFolder;this.activeFolder=targetFolder;
+        this.highlightFilters();
+        await this.reload();
+        if(!this.items.some(item=>item.id===target)){
+          this.folderId=null;this.activeFolder=null;
+          this.highlightFilters();
+          await this.reload();
+        }
+      }
+      this.markActive(target,targetFolder);
+      this.highlight();
       await this.showEditor(target);
+      this.ensureVisible(target);
     }
     (this.element('browser-query') as HTMLInputElement).focus();
     // 窗口显示/最大化可能在首帧之后才完成，补一次重算，保证铺满
@@ -729,7 +776,7 @@ export class CardBrowser {
     }
     this.conflicts=conflicts;
   }
-  filterFolder(id:string){this.folderId=id;this.highlightFilters();void this.refresh();}
+  filterFolder(id:string){this.folderId=id;this.activeFolder=id||null;this.highlightFilters();void this.refresh();}
   markActive(id:string,folderId?:string|null){
     if(!this.visible||this.selectedIds.size<=1)this.selectRow(id);
     if(!this.visible)return;
@@ -757,7 +804,7 @@ export class CardBrowser {
     // 多选删除；垃圾桶里的卡片不能再软删，所以只按未删除的选中项决定可用性。
     (this.element('browser-delete') as HTMLButtonElement).disabled=!cards.some(card=>!card.deletedAt);
     // 标题栏显示总数与已选数（仿 Anki 的「已选取 N 张卡片，共 M 张」）
-    this.element('browser-total').textContent=t('共 {0} 张{1}',this.total,this.selectedIds.size?t(' · 已选 {0} 张',this.selectedIds.size):'');
+    this.updateTitle();
     (this.element('browser-info') as HTMLButtonElement).disabled=cards.length!==1;
     this.element('browser-selection').textContent=this.selectedIds.size>1?t('已选 {0} 张',this.selectedIds.size):t('Ctrl 多选 · Shift 连选');
   }
@@ -810,11 +857,22 @@ export class CardBrowser {
       case 'updatedAt':return node.updatedAt?new Date(node.updatedAt).toLocaleDateString(getLocale()):'—';
     }
   }
+  /** 2026-11-17：标题行与系统窗口标题同步，内容区不再单占一行。 */
+  private updateTitle(){
+    const text=this.selectedIds.size
+      ? t('浏览卡片（共 {0} 张 · 已选 {1} 张）',this.total,this.selectedIds.size)
+      : t('浏览卡片（共 {0} 张）',this.total);
+    this.title.textContent=text;
+    if(this.title.isConnected)window.document.title=text;
+  }
   private render(){
-    this.element('browser-total').textContent=t('共 {0} 张',this.total);
+    this.updateTitle();
     // 底部不再重复显示总数（标题栏已有「共 N 张」）
-    this.element('browser-table-scroll').scrollTop=0;
+    // 2026-11-17：有当前卡片时不要回到顶部——打开浏览卡片要能看到被选中的那一行
+    const keep=this.activeId&&this.items.some(item=>item.id===this.activeId)?this.activeId:null;
+    if(!keep)this.element('browser-table-scroll').scrollTop=0;
     this.renderRows();
+    if(keep)this.scrollToItem(keep);
   }
   /** 真正的虚拟表格（和 Anki 的 QTableView 同思路）：表头单独一张固定表，
    *  表体只渲染可视区上下各 8/16 行，外面用固定高度的 canvas 撑出滚动范围。
@@ -866,13 +924,60 @@ export class CardBrowser {
     }
     return parts.join('');
   }
+  /** 2026-11-17：光标在字段里时，滚轮也要能滚整块编辑区（字段本身已经不再内部滚动）。 */
+  private bindEditorWheel(){
+    const pane=this.element('browser-editor');
+    pane.addEventListener('wheel',event=>{
+      if(event.ctrlKey)return;
+      if(pane.scrollHeight<=pane.clientHeight+1)return;
+      const inner=(event.target as HTMLElement).closest('.cm-scroller,textarea');
+      if(inner&&inner.scrollHeight>inner.clientHeight+1)return;
+      pane.scrollTop+=event.deltaY;
+      event.preventDefault();
+    },{passive:false,capture:true});
+  }
   private bindRowEvents(){
     const rows=this.element('browser-rows');
+    // 2026-11-17：仿 Anki——左键按住拖动是「连续选行」，不选中文字。
+    let dragMoved=false;
+    rows.addEventListener('pointerdown',event=>{
+      if(event.button!==0)return;
+      const row=(event.target as HTMLElement).closest<HTMLElement>('tr[data-id]');
+      if(!row)return;
+      const startId=row.dataset.id!;
+      event.preventDefault();
+      dragMoved=false;
+      this.selectionAnchor=startId;
+      this.selectedIds.clear();this.selectedIds.add(startId);
+      this.activeId=startId;this.highlight();
+      const move=(pointer:PointerEvent)=>{
+        dragMoved=true;
+        const point=document.elementFromPoint(pointer.clientX,pointer.clientY) as HTMLElement|null;
+        const target=point?.closest<HTMLElement>('tr[data-id]');
+        if(!target)return;
+        const endId=target.dataset.id!;
+        const from=this.items.findIndex(item=>item.id===startId);
+        const to=this.items.findIndex(item=>item.id===endId);
+        if(from<0||to<0)return;
+        this.selectedIds.clear();
+        for(const item of this.items.slice(Math.min(from,to),Math.max(from,to)+1))this.selectedIds.add(item.id);
+        this.activeId=endId;this.highlight();
+      };
+      const stop=()=>{
+        document.removeEventListener('pointermove',move);
+        document.removeEventListener('pointerup',stop);
+        // 拖动结束后紧接着会有一次 click，别让它把多选清成单选
+        if(dragMoved)setTimeout(()=>{dragMoved=false;},0);
+      };
+      document.addEventListener('pointermove',move);
+      document.addEventListener('pointerup',stop);
+    });
     rows.addEventListener('click',event=>{
       const target=event.target as HTMLElement;
       const conflict=target.closest<HTMLElement>('[data-conflict]');
       if(conflict){event.stopPropagation();void this.openConflict(conflict.dataset.conflict!);return;}
       const row=target.closest<HTMLElement>('tr[data-id]');if(!row)return;
+      if(dragMoved){dragMoved=false;return;}
       void this.actions.run(async()=>{
         const id=row.dataset.id!;this.selectRow(id,event);
         const node=this.items.find(item=>item.id===id);
@@ -951,6 +1056,17 @@ export class CardBrowser {
       reload:async()=>{await this.loadConflicts();return this.conflictGroups();},
       refresh:()=>this.refresh(),
     });
+  }
+  /** 2026-11-17：把某一行滚到可视区中间，并保证它已经渲染出来、带上选中样式。 */
+  private ensureVisible(id:string){
+    const index=this.items.findIndex(item=>item.id===id);
+    if(index<0)return;
+    const scroll=this.element('browser-table-scroll');
+    scroll.scrollTop=Math.max(0,index*this.rowHeight-scroll.clientHeight/2);
+    this.renderRows();
+    const row=this.host.querySelector<HTMLElement>('tr[data-id="'+CSS.escape(id)+'"]');
+    row?.scrollIntoView({block:'center'});
+    this.highlight();
   }
   private scrollToItem(id:string){
     const index=this.items.findIndex(item=>item.id===id);

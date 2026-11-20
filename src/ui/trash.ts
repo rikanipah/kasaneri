@@ -16,7 +16,7 @@ export class TrashDialog{
   private note=el('p','','preference-hint');
   private sequence=0;
 
-  constructor(private request:(action:string,payload?:any)=>Promise<any>,private onRestore:()=>void){
+  constructor(private request:(action:string,payload?:any)=>Promise<any>,private onRestore:(id:string,parentId:string|null)=>void){
     this.dialog.id='trash';
     this.body.className='trash-body';
     const header=el('div','','statistics-heading');
@@ -82,7 +82,7 @@ export class TrashDialog{
       const restore=el('button',t('恢复')) as HTMLButtonElement;restore.className='primary';
       restore.onclick=()=>void (async()=>{
         restore.disabled=true;
-        try{await this.request('trashRestore',{id:item.nodeId});this.note.textContent=t('已恢复「{0}」。',item.title);this.onRestore();}
+        try{const restored=await this.request('trashRestore',{id:item.nodeId});this.note.textContent=t('已恢复「{0}」。',item.title);this.onRestore(item.nodeId,restored.parentId);}
         catch(reason){this.note.textContent=reason instanceof Error?reason.message:String(reason);}
         finally{await this.render(sequence);}
       })();

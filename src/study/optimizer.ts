@@ -13,7 +13,7 @@ export const MIN_OPTIMIZATION_REVIEWS=50;
 
 export interface OptimizeResult {
   weights:number[];
-  reviewCount:number;   // 送入样本转换的评分条数
+  reviewCount:number;   // 送入样本转换的评价条数
   trainingItemCount:number;
   cardCount:number;     // 涉及的卡片数
   durationMs:number;
@@ -109,12 +109,14 @@ export async function optimizeParameters(repository:Repository,input:{
 
 // ===== 留存度快速统计（替代原先"训练+时间序列评测"的慢路径）=====
 // 口径对齐 Anki「记忆保留率」：只统计间隔 ≥ 1 天的复习（排除学习步骤内的短间隔），
-// 通过 = 评分 > 重来。按今天/昨天/上周/上个月/近一年/全部分组，并按难度拆欠熟练/已熟练。
+// 通过 = 评价 > 重来。按今天/昨天/上周/上个月/近一年/全部分组，并按难度拆欠熟练/已熟练。
 export interface RetentionRow{key:string;label:string;pass:number;total:number;rate:number|null;}
 export interface RetentionReport{
   overall:RetentionRow;
   periods:RetentionRow[];
   byDifficulty:{hard:RetentionRow;easy:RetentionRow};
+  /** 2026-11-19：按卡（Anki 的 young/mature）——本次间隔 <21 天算年轻卡，≥21 天算成熟卡。 */
+  byInterval:{young:RetentionRow;mature:RetentionRow};
   durationMs:number;
 }
 export function retentionReport(repository:Repository,input:{folderId?:string|null;now?:number}={}):RetentionReport{
@@ -153,6 +155,7 @@ export function retentionReport(repository:Repository,input:{folderId?:string|nu
   };
   const acc:Record<string,{pass:number;total:number}>={};
   const hard={pass:0,total:0},easy={pass:0,total:0};
+  const young={pass:0,total:0},mature={pass:0,total:0};
   const overall={pass:0,total:0};
   for(const row of rows){
     const at=Number(row.at),last=row.lastReview?new Date(String(row.lastReview)).getTime():0;
@@ -166,6 +169,9 @@ export function retentionReport(repository:Repository,input:{folderId?:string|nu
     }
     const d=Number(row.difficulty);
     if(Number.isFinite(d)&&d>0){(d>5?hard:easy).total++;if(pass)(d>5?hard:easy).pass++;}
+    // 按卡：年轻卡 <21 天、成熟卡 ≥21 天（Anki 的 young/mature 口径）
+    const elapsed=last?(at-last)/day:Number.isFinite(interval)?(interval<0?-interval/86400:interval):NaN;
+    if(Number.isFinite(elapsed)&&elapsed>0){(elapsed<21?young:mature).total++;if(pass)(elapsed<21?young:mature).pass++;}
   }
   const toRow=(key:string,label:string,cell:{pass:number;total:number}|undefined):RetentionRow=>({
     key,label,pass:cell?.pass||0,total:cell?.total||0,rate:cell&&cell.total?cell.pass/cell.total:null});
@@ -174,6 +180,7 @@ export function retentionReport(repository:Repository,input:{folderId?:string|nu
     overall:toRow('all',t('全部'),overall),
     periods,
     byDifficulty:{hard:toRow('hard',t('欠熟练（难度>5）'),hard),easy:toRow('easy',t('已熟练（难度≤5）'),easy)},
+    byInterval:{young:toRow('young',t('年轻卡（间隔<21 天）'),young),mature:toRow('mature',t('成熟卡（间隔≥21 天）'),mature)},
     durationMs:Date.now()-begin,
   };
 }

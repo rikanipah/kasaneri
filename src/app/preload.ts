@@ -46,12 +46,15 @@ const bridge:ReadingBridge={
   // 桌面对等同步。配置即时生效（开启监听/更新对端），passphrase 只用于派生 HMAC 密钥、不落盘。
   syncConfigure:config=>ipcRenderer.invoke('sync:configure',config),
   syncNow:()=>ipcRenderer.invoke('sync:now'),
+  syncFullContent:()=>ipcRenderer.invoke('sync:full-content'),
   syncStatus:()=>ipcRenderer.invoke('sync:status'),
   syncTestPeer:address=>ipcRenderer.invoke('sync:test-peer',address),
   syncConflicts:()=>ipcRenderer.invoke('sync:conflicts'),
   syncResolveConflict:(file,choice)=>ipcRenderer.invoke('sync:resolve-conflict',file,choice),
   syncChooseContent:(nodeId,heads,selected)=>ipcRenderer.invoke('sync:choose-content',nodeId,heads,selected),
   syncDiscardContent:nodeId=>ipcRenderer.invoke('sync:discard-content',nodeId),
+  syncSettingsConflicts:()=>ipcRenderer.invoke('sync:settings-conflicts'),
+  syncResolveSettingsConflict:(key,choice)=>ipcRenderer.invoke('sync:resolve-settings-conflict',key,choice),
   // 自动备份
   backupStatus:()=>ipcRenderer.invoke('backup:status'),
   backupConfigure:config=>ipcRenderer.invoke('backup:configure',config),

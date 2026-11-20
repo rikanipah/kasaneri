@@ -1,5 +1,6 @@
 import { t } from '../core/i18n';
-import {makeAnchor,titleFrom} from '../core/card';
+import {titleFrom} from '../core/card';
+import {makeAnchor} from '../content/anchors';
 import {
   assetEmbeds,formatAssetEmbed,parseAssetEmbed,validImageBox,
   type ImageOcclusionInput,type ImageOcclusionUndo,

@@ -8,27 +8,6 @@ export function titleFrom(text: string): string {
   return Array.from(text.replace(/\s+/gu, ' ').trim()).slice(0, 100).join('') || t('未命名');
 }
 
-export function makeAnchor(text: string, from: number, to: number, section?: Anchor['section']): Anchor {
-  return {
-    quote: text.slice(from, to),
-    prefix: text.slice(Math.max(0, from - 40), from),
-    suffix: text.slice(to, to + 40),
-    start: from,
-    ...(section ? { section } : {}),
-  };
-}
-
-export function locateAnchor(text: string, anchor: Anchor): number {
-  if (!anchor.quote) return -1;
-  const hits: number[] = [];
-  for (let at = text.indexOf(anchor.quote); at >= 0; at = text.indexOf(anchor.quote, at + 1)) hits.push(at);
-  if (hits.length === 1) return hits[0];
-  const contextual = hits.filter(at =>
-    text.slice(0, at).endsWith(anchor.prefix) && text.startsWith(anchor.suffix, at + anchor.quote.length));
-  if (contextual.length === 1) return contextual[0];
-  return anchor.start !== undefined && contextual.includes(anchor.start) ? anchor.start : -1;
-}
-
 export function cardParts(body: string): { content: string; answer: string } {
   const normalized = body.replace(/\r\n/g, '\n');
   if (normalized.startsWith(CARD_START)) {

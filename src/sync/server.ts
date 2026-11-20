@@ -31,15 +31,16 @@ export function createSyncHttpServer({
   const server=createServer(async(req,res)=>{
     res.setHeader(SYNC_PROTOCOL_HEADER,'2');
     try{
+      const settingsPath=req.url==='/sync/settings';
       const contentPath=req.url===CONTENT_IDS_PATH||req.url===CONTENT_READ_PATH||req.url===CONTENT_ASSET_PATH;
       const secret=passphrase();
       const allowContent=Boolean(contentSync&&secret&&req.headers[SYNC_PROTOCOL_HEADER]==='2');
       if(contentPath&&!allowContent){res.writeHead(contentSync&&secret?401:404).end();return;}
-      if(contentPath&&req.method!=='POST'){res.writeHead(405).end();return;}
+      if((contentPath||settingsPath)&&req.method!=='POST'){res.writeHead(405).end();return;}
       const chunks:Buffer[]=[];let size=0;
       for await(const chunk of req.iterator({destroyOnReturn:false})){
         size+=chunk.length;
-        if(contentPath&&size>32768){res.writeHead(413,{connection:'close'}).end();return;}
+        if((contentPath||settingsPath)&&size>32768){res.writeHead(413,{connection:'close'}).end();return;}
         chunks.push(chunk as Buffer);
       }
       const body=Buffer.concat(chunks).toString('utf8');
@@ -74,8 +75,17 @@ export function createSyncHttpServer({
         syncJson(res,{app:'leafloop',now:Date.now()});
       }
       else if(req.url==='/sync/ping'){
-        syncJson(res,{app:'leafloop',version:getVersion(),deviceId:deviceId,now:Date.now(),studyChanges:1,
+        syncJson(res,{app:'leafloop',version:getVersion(),deviceId:deviceId,now:Date.now(),studyChanges:1,settingsSync:1,
           ...(allowContent?{contentVersions:1,contentAssets:1}:{})});}
+      else if(req.url==='/sync/settings'){
+        if(!payload||typeof payload!=='object'||Array.isArray(payload)||!Array.isArray(payload.snapshots)){
+          res.writeHead(400).end();return;
+        }
+        const peerLabel=typeof payload.peer==='string'&&payload.peer.trim()?payload.peer.trim().slice(0,80):(req.socket.remoteAddress||t('未知对端'));
+        const received=await call('syncSettingsReceive',{snapshots:payload.snapshots,peer:peerLabel,deviceId});
+        const snapshots=await call('syncSettingsExport',{deviceId});
+        syncJson(res,{snapshots,received});
+      }
       else if(req.url==='/sync/ids')syncJson(res,{ids:await call('syncIdsAll',{studyChanges:payload.studyChanges}),scheduleChoices:2});
       else if(req.url==='/sync/decisions'){
         await promoteLegacyDecisions();

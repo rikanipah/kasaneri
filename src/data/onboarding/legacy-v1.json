@@ -1,0 +1,22 @@
+[
+  {
+    "title": "Incremental Reading",
+    "content": "Right-click a folder and choose **New topic**, or press Alt+F. A topic can contain extracts, and each extract can have its own children.\n\nSelect text and press Alt+A to create an extract. The selection becomes a highlighted anchor. Ctrl-click it to open the extract. If several cards share the anchor, choose one from the list.\n\nSelect text and press Alt+S to create a test card. The question starts with the source text and the selected text goes into the answer. You can edit both. Alt+D creates a blank extract under the current card.\n\nThe controls at the bottom left toggle extract and test-card highlights. The third control toggles all highlights. You can change keyboard shortcuts under Settings → Shortcuts."
+  },
+  {
+    "title": "Reviewing Test Cards",
+    "content": "Each folder in the Directory Tree is a deck. Nested folders are subdecks. Select a folder and click **Review** in the right toolbar, or right-click that folder and choose **Start review**. Only test cards enter review.\n\nFSRS settings are inherited from the nearest parent deck with an override, then from Settings → Default Review. To override settings for a single deck, right-click its folder and choose **Review settings**.\n\nPress Space to reveal the answer. Rate **Again** with 1 or **Good** with 3. Hard and Easy are hidden by default and can be enabled in Default Review.\n\nIf consecutive Again ratings reach the configured leech threshold, the default action is to tag the card and pause it to To-do so you can revise it. You can do this manually with **More → Pause to To-do**. When a card needs a decision about whether to keep it, use **More → On hold** and find it later in the Card Browser. A card on hold is outside both queues."
+  },
+  {
+    "title": "Working Through To-do",
+    "content": "To-do schedules materials for reading and editing. Open it with the book icon in the right toolbar or with Alt+L.\n\n- **Read** schedules the material again after a longer interval.\n- **Later** brings it back sooner so you can continue where you left off.\n- **Done** keeps the card in the library and stops scheduling it in To-do.\n\nAdjust the intervals and priorities under Settings → Default To-do."
+  },
+  {
+    "title": "Directory Tree",
+    "content": "The Directory Tree shows where folders, topics, extracts, and test cards are stored. Click a row to select it. Use + or − to expand or collapse its children.\n\nRight-click a folder or card for its available actions. Use the colored filters at the top to show topics, extracts, or test cards."
+  },
+  {
+    "title": "Memory Tree and Prerequisites",
+    "content": "The Memory Tree shows a card’s parent, children, and related links. For example, **Van ’t Hoff equation** can be a parent and **Meaning of the equilibrium constant** its test child. The parent waits for its test children to meet the prerequisite threshold before entering review.\n\nRight-click a parent and choose **New test child card** to create a prerequisite. Creating a test child from the Directory Tree also adds it to the Memory Tree. Click a child in the Memory Tree to open it in the workspace and locate it in the Directory Tree. The Memory Tree keeps its current branches and scroll position.\n\nUse **Link related card…** to add a shortcut to another card. You can also add or ignore prerequisites in **Card info**."
+  }
+]

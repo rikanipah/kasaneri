@@ -3,7 +3,7 @@ import { DEFAULT_LOCALE, parseLocale, setLocale, t } from '../core/i18n';
 import {join} from 'node:path';
 import {Repository} from './database';
 import {StudyService} from '../study/study';
-import {CardCatalog} from './catalog';
+import {CardCatalog} from '../catalog';
 import {CardRelations} from './card-relations';
 import {DirectoryProjection} from '../folders/directory';
 import {importAsset,importVault} from './import-vault';
@@ -16,7 +16,7 @@ import {importAnkiExport} from './import-anki';
 import {applySyncOps,collectSyncIds,collectSyncOps,replayPendingSyncOps} from '../sync/engine';
 import {ContentJournal} from '../sync/content-journal';
 import {ContentAssets} from '../sync/content-assets';
-import {applySyncDecisions,collectSyncDecisions,conflictResolutionKey,isConflictFile,resolveSyncConflict,syncDecisionFor,syncDecisionDispute} from '../sync/resolve-conflict';
+import {applySyncDecisions,collectSyncDecisions,conflictResolutionKey,isConflictFile,isObsoleteConflict,resolveSyncConflict,syncDecisionFor,syncDecisionDispute} from '../sync/resolve-conflict';
 const port=parentPort!;
 setLocale(parseLocale(workerData.locale)??DEFAULT_LOCALE);
 let repository:Repository,study:StudyService,catalog:CardCatalog,directory:DirectoryProjection,relations:CardRelations;
@@ -57,6 +57,8 @@ port.on('message',async({id,action,payload})=>{
       case 'editorGet':result=repository.getNodeForEditor(payload.id);break;
       case 'path':result=repository.path(payload.id);break;
       case 'anchors':result=repository.anchors(payload.id);break;
+      // 2026-11-20：拖高亮棍改锚点边界（按行给 from/to）
+      case 'setAnchor':result=repository.setAnchor({id:String(payload?.id||''),from:Number(payload?.from)||0,to:Number(payload?.to)||0});break;
       case 'save':result=repository.save(payload);study.register(payload.id);study.invalidate();break;
       case 'saveImageOcclusion':
         result=saveImageOcclusion(repository,payload,id=>study.register(id));directory.invalidate();study.invalidate();break;
@@ -74,6 +76,8 @@ port.on('message',async({id,action,payload})=>{
       case 'searchPrerequisites':result=relations.search(payload.id,payload.query,true);break;
       case 'setPrerequisite':result=study.setPrerequisite(payload);break;
       case 'addRelatedCard':result=relations.addRelated(payload.id,payload.targetId);break;
+      case 'addMemoryChild':result=relations.addMemoryChild(payload.id,payload.targetId);if(result)study.invalidate();break;
+      case 'removeAllCardRelations':result=relations.removeAll(payload.id);if(result)study.invalidate();break;
       case 'removeCardRelation':
         result=relations.remove(payload.id,payload.relation);
         if(result&&payload.relation.kind==='memory')study.invalidate();
@@ -87,7 +91,7 @@ port.on('message',async({id,action,payload})=>{
           const node=repository.getNode(id);
           if(!node||node.kind==='folder'&&payload.includeFolders!==true)throw Error(t('选择中有不存在的卡片。'));
           if(node.parentId===payload.parentId||repository.path(id).some(parent=>parent.id!==id&&ids.has(parent.id)))return [];
-          repository.move(id,payload.parentId,undefined,payload.peerId);
+          repository.move(id,payload.parentId,undefined,payload.peerId,payload.allowCardParent===true);
           return [{id,parentId:node.parentId}];
         }));
         directory.invalidate();await study.hierarchyChanged();break;
@@ -97,7 +101,7 @@ port.on('message',async({id,action,payload})=>{
           for(const {id,parentId} of payload.previous)repository.move(id,parentId,{expectedParentId:payload.expectedParentId});
         });
         directory.invalidate();await study.hierarchyChanged();break;
-      case 'remove':result=repository.remove(payload.id);directory.invalidate();await study.hierarchyChanged();break;
+      case 'remove':result=repository.remove(payload.id,payload.mode==='single'?'single':'branch');directory.invalidate();await study.hierarchyChanged();break;
       case 'undoCreation':{
         const isFolder=repository.getNode(payload.id)?.kind==='folder';
         result=repository.undoCreation(payload.id);
@@ -106,7 +110,7 @@ port.on('message',async({id,action,payload})=>{
         break;
       }
       case 'search':result=repository.search(payload.query);break;
-      // 卡片属性（标签）——列表 / 添加 / 删除
+      // 卡片标签（标签）——列表 / 添加 / 删除
       case 'cardTags':result=repository.query('SELECT tag FROM node_tags WHERE node_id=? ORDER BY tag').all(String(payload.id)).map(row=>String(row.tag));break;
       // leech 属性后面显示累计重来次数
       case 'leechCount':result=study.leechLapses(String(payload.id));break;
@@ -158,9 +162,10 @@ port.on('message',async({id,action,payload})=>{
       case 'deckConfigSave':result=await study.saveDeckConfig(payload);break;
       case 'folderCounts':result=study.counts();break;
       case 'nodeStudy':result=study.nodeState(payload.id);break;
-      case 'setPriority':result=study.setPriority(payload.id,payload.priority);break;
+      case 'setPriority':result=study.setPriority(payload.id,payload.priority,payload.reading);break;
       case 'setStudyEnabled':result=study.setEnabled(payload.id,payload.enabled);break;
-      case 'buryCard':result=study.bury(payload.id);break;
+      case 'buryCard':result=study.buryActive(payload);break;
+      case 'undoBuryCard':result=study.undoBury(payload.change,payload.sessionId);break;
       case 'setCardHold':result=study.setHold(payload.id,!!payload.hold);break;
       case 'setStudyEnabledBatch':result=study.setEnabledBatch(payload.ids,payload.enabled);break;
       case 'restoreStudyEnabledBatch':result=study.restoreEnabledBatch(payload.changes);break;
@@ -206,7 +211,9 @@ port.on('message',async({id,action,payload})=>{
       }
       // 留存度快速统计（秒级，不再训练）
       case 'retentionReport':result=retentionReport(repository,payload||{});break;
-      case 'simulateWorkload':result=study.simulateWorkload(payload?.folderId??null);break;
+      // 2026-11-20：simulateWorkload 是异步的（要按留存率现造调度器），这里必须 await，
+      // 否则 Promise 会被当成结果 postMessage，主进程侧报「could not be cloned」。
+      case 'simulateWorkload':result=await study.simulateWorkload(payload?.folderId??null);break;
       case 'importAnkiExport':
         result=importAnkiExport(repository,payload.bundle,payload.media,true);
         directory.invalidate();await study.hierarchyChanged();break;
@@ -215,13 +222,27 @@ port.on('message',async({id,action,payload})=>{
       case 'syncOps':result=collectSyncOps(repository,payload?.ids||[]);break;
       case 'syncApplyOps':result=applySyncOps(repository,payload?.ops||[]);study.invalidate();break;
       case 'syncReplayPending':result=replayPendingSyncOps(repository);study.invalidate();break;
+      case 'syncSettingsExport':result=repository.exportSyncedSettings(payload?.deviceId?String(payload.deviceId):undefined);break;
+      case 'syncSettingsReceive':{
+        const res=repository.receiveSyncedSettings(Array.isArray(payload?.snapshots)?payload.snapshots:[],String(payload?.peer||''),payload?.deviceId?String(payload.deviceId):undefined);
+        if(res.applied.length)await study.reloadSettings(true);
+        result=res;break;
+      }
+      case 'syncSettingsConflicts':result=repository.listSettingsConflicts();break;
+      case 'syncSettingsResolve':{
+        const resolved=repository.resolveSettingsConflict(String(payload?.key||''),payload?.choice==='remote'?'remote':'local',Date.now(),payload?.deviceId?String(payload.deviceId):undefined);
+        await study.reloadSettings(true);
+        result=resolved;break;
+      }
       case 'syncContentList':{
         const content=contentJournal(),after=payload?.after??null;
         if(after===null){
+          content.enqueueUntracked();
           while(repository.query('SELECT 1 FROM sync_content_dirty LIMIT 1').get())content.captureDirty();
         }
         result=content.listVersionIds(after);break;
       }
+      case 'syncContentPrepareFull':result=contentJournal().prepareFullSync();break;
       case 'syncContentRead':result=contentJournal().readVersions(payload?.ids);break;
       case 'syncContentMissing':result=contentJournal().missingVersionIds(payload?.ids);break;
       case 'syncContentReceive':contentJournal().receive(payload?.versions);result=true;break;
@@ -264,6 +285,8 @@ port.on('message',async({id,action,payload})=>{
           pending:outcomes.filter(item=>item.result.status==='pending').length,missingAssets:[...missingAssets],editingIds};
         break;
       }
+      // 2026-11-21：陈旧冲突判定（卡片在那之后又变过，两侧都已无法应用）
+      case 'syncConflictObsolete':result=isObsoleteConflict(repository,payload?.conflict);break;
       case 'syncConflictResolutions':result=Object.fromEntries((payload?.items||[]).filter((item:any)=>isConflictFile(item.file))
         .map((item:any)=>[item.file,{
           resolution:syncDecisionFor(repository,item.detail)??repository.getSetting(conflictResolutionKey(item.file)),
@@ -278,14 +301,19 @@ port.on('message',async({id,action,payload})=>{
         result=payload?.folderId==null?study.start(null,payload?.mode):study.startDeck(payload.folderId,payload?.mode==='reading'?'reading':'cards');break;
       case 'reviewStop':result=study.stop();break;
       case 'reviewRefresh':result=study.refresh();break;
+      case 'reviewFocus':result=study.focus(payload.id);break;
+      case 'pauseCard':result=study.pauseActive(payload);break;
+      case 'undoPauseCard':result=study.undoPause(payload.change,payload.sessionId);break;
       case 'reviewGrade':result=study.grade(payload);break;
       case 'reviewAgainDependents':result=study.againDependents(payload);break;
       case 'recordForgotten':result=study.recordForgotten(payload.id);break;
       case 'resetMemory':result=study.resetMemory(payload.id);break;
       case 'reviewUndo':result=payload?.eventId?study.undo(payload.eventId):study.undo();break;
+      // 2026-11-19：撤销「置于末尾」——只在会话队列里把卡片放回当前位
+      case 'readingUnqueue':result=study.unqueue(String(payload?.id));break;
       // 垃圾桶（软删除的卡片）。cleanup 在启动与定时任务里跑。
       case 'trashList':result=repository.trashList(Number(payload?.limit)||200);break;
-      case 'trashRestore':result=repository.trashRestore(String(payload?.id));study.invalidate();break;
+      case 'trashRestore':result=repository.trashRestore(String(payload?.id));directory.invalidate();await study.hierarchyChanged();break;
       case 'trashPurge':repository.trashPurge(String(payload?.id));result=true;study.invalidate();break;
       case 'trashCleanup':result=repository.trashCleanup(Number(payload?.now)||Date.now(),Number(payload?.retentionDays)||Number((study.config().settings as any).trashRetentionDays)||30);study.invalidate();break;
       case 'close':assets?.close();repository.close();result=true;break;

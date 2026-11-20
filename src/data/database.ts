@@ -3,12 +3,19 @@ import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import { createHash, randomBytes } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
-import { makeAnchor, titleFrom } from '../core/card';
+import { titleFrom } from '../core/card';
+import { makeAnchor, remapAnchor } from '../content/anchors';
 import { studyReady } from '../core/image-occlusion';
-import { projectStoredDocuments,readDocuments,storeDocuments,type StoredDocuments } from './document-storage';
+import { projectStoredDocuments,readDocuments,storeDocuments,type StoredDocuments } from '../content/document';
 import {migrateLibrary} from './migrations';
 import {TrashStore} from './trash-store';
 import type { Anchor, Asset, ChildrenPage, CreateInput, Material, NodeInput, SaveInput, TreeNode } from '../core/model';
+import {DEFAULT_SETTINGS,normalizeSettings,type StudySettings} from '../settings';
+import {
+  SETTINGS_CONFLICT_PREFIX,SYNC_SETTING_KEYS,isCompatibleFsrsPair,isSyncSettingKey,mergeAncestors,
+  settingVersionId,settingsHash,shouldTakeRemote,validateSettingsSnapshot,
+  type SettingsConflict,type SettingsReceiveResult,type SettingsSnapshot,
+} from '../settings/sync';
 
 // metadata 列加入公共列清单。TreeNode 类型没有 metadata 字段，多出来的值会被忽略；
 // Material（getNode）会解析它，见下方 material()。
@@ -70,6 +77,331 @@ export class Repository {
   setSetting(key: string, value: unknown): void {
     this.query('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value')
       .run(key, JSON.stringify(value));
+  }
+
+  localSettingsDeviceId(preferred?:string):string{
+    const candidate=typeof preferred==='string'?preferred.trim().slice(0,128):'';
+    const existing=String(this.getSetting('settingsLocalDeviceId')||'').trim();
+    if(candidate){
+      if(!existing)this.setSetting('settingsLocalDeviceId',candidate);
+      return candidate;
+    }
+    if(existing)return existing;
+    const created=randomBytes(16).toString('hex');
+    this.setSetting('settingsLocalDeviceId',created);
+    return created;
+  }
+
+  private readSettingsMetaMap():Map<string,{updatedAt:number;deviceId:string;valueHash:string;ancestors:string[]}>{
+    const rows=this.query('SELECT key,updated_at,device_id,value_hash,ancestors FROM settings_meta').all() as Array<Record<string,any>>;
+    const map=new Map<string,{updatedAt:number;deviceId:string;valueHash:string;ancestors:string[]}>();
+    for(const row of rows){
+      let ancestors:string[]=[];
+      try{const parsed=JSON.parse(String(row.ancestors||'[]'));if(Array.isArray(parsed))ancestors=mergeAncestors(parsed);}catch{}
+      map.set(String(row.key),{
+        updatedAt:Number(row.updated_at)||0,
+        deviceId:String(row.device_id||''),
+        valueHash:String(row.value_hash||''),
+        ancestors,
+      });
+    }
+    return map;
+  }
+
+  private writeSettingsMeta(snapshot:Pick<SettingsSnapshot,'key'|'updatedAt'|'deviceId'|'valueHash'|'ancestors'>):void{
+    this.query(`INSERT INTO settings_meta(key,updated_at,device_id,value_hash,ancestors) VALUES(?,?,?,?,?)
+      ON CONFLICT(key) DO UPDATE SET updated_at=excluded.updated_at,device_id=excluded.device_id,value_hash=excluded.value_hash,ancestors=excluded.ancestors`)
+      .run(snapshot.key,snapshot.updatedAt,snapshot.deviceId,snapshot.valueHash,JSON.stringify(mergeAncestors(snapshot.ancestors)));
+  }
+
+  private readCurrentStudySettings():StudySettings{
+    const stored=this.getSetting('studySettings') as Record<string,unknown>|null;
+    const raw={...DEFAULT_SETTINGS,...(stored&&typeof stored==='object'&&!Array.isArray(stored)?stored:{})};
+    const fontSize=this.getSetting('fontSize'),theme=this.getSetting('theme');
+    if(fontSize!==null&&fontSize!==undefined)(raw as any).fontSize=fontSize;
+    if(theme!==null&&theme!==undefined)(raw as any).theme=theme;
+    return normalizeSettings(raw);
+  }
+
+  /** 在当前事务内为发生实际变化的白名单全局设置记录同步元数据（不污染迁移与未改动项）。 */
+  recordSyncedSettingChanges(previous:StudySettings,next:StudySettings,now=Date.now(),deviceId?:string):string[]{
+    const prevNorm=normalizeSettings(previous),nextNorm=normalizeSettings(next);
+    const changedKeys=SYNC_SETTING_KEYS.filter(key=>settingsHash((prevNorm as any)[key])!==settingsHash((nextNorm as any)[key]));
+    if(!changedKeys.length)return [];
+    const write=()=>{
+      const dev=this.localSettingsDeviceId(deviceId);
+      const metaMap=this.readSettingsMetaMap();
+      for(const key of changedKeys){
+        const prevVal=(prevNorm as any)[key],nextVal=(nextNorm as any)[key];
+        const prevHash=settingsHash(prevVal),nextHash=settingsHash(nextVal);
+        const existing=metaMap.get(key);
+        const ancestors=existing
+          ?mergeAncestors([settingVersionId(existing)],existing.ancestors)
+          :prevHash!==settingsHash((DEFAULT_SETTINGS as any)[key])
+            ?mergeAncestors([settingVersionId({updatedAt:1,deviceId:dev,valueHash:prevHash})])
+            :[];
+        const updatedAt=Math.max(Math.floor(now),(existing?.updatedAt??0)+1);
+        const nextSnap:SettingsSnapshot={key,value:nextVal,updatedAt,deviceId:dev,valueHash:nextHash,ancestors};
+        const conflictKey=SETTINGS_CONFLICT_PREFIX+key;
+        const conflict=this.getSetting(conflictKey) as SettingsConflict|null;
+        if(conflict&&conflict.remote){
+          if(conflict.remote.valueHash===nextHash){
+            // 用户手动把本机值改成了与对端一致：视为合流并消除冲突。
+            nextSnap.ancestors=mergeAncestors(nextSnap.ancestors,[settingVersionId(conflict.remote)],conflict.remote.ancestors);
+            this.query('DELETE FROM settings WHERE key=?').run(conflictKey);
+          }else{
+            this.setSetting(conflictKey,{...conflict,local:nextSnap});
+          }
+        }
+        this.writeSettingsMeta(nextSnap);
+      }
+    };
+    if(this.db.isTransaction)write();else this.transaction(write);
+    return changedKeys;
+  }
+
+  exportSyncedSettings(deviceId?:string):SettingsSnapshot[]{
+    const current=this.readCurrentStudySettings();
+    const metaMap=this.readSettingsMetaMap();
+    const snapshots:SettingsSnapshot[]=[];
+    let dev='';
+    const getDev=()=>dev||(dev=this.localSettingsDeviceId(deviceId));
+    const toPersist:SettingsSnapshot[]=[];
+    for(const key of SYNC_SETTING_KEYS){
+      const value=(current as any)[key];
+      const valueHash=settingsHash(value);
+      const meta=metaMap.get(key);
+      if(meta){
+        const snap:SettingsSnapshot={
+          key,value,updatedAt:meta.updatedAt,deviceId:meta.deviceId||getDev(),valueHash,ancestors:meta.ancestors,
+        };
+        if(meta.valueHash!==valueHash||!meta.deviceId)toPersist.push(snap);
+        snapshots.push(snap);
+      }else if(valueHash!==settingsHash((DEFAULT_SETTINGS as any)[key])){
+        const snap:SettingsSnapshot={key,value,updatedAt:1,deviceId:getDev(),valueHash,ancestors:[]};
+        toPersist.push(snap);
+        snapshots.push(snap);
+      }
+    }
+    if(toPersist.length){
+      this.transaction(()=>{for(const snap of toPersist)this.writeSettingsMeta(snap);});
+    }
+    return snapshots;
+  }
+
+  receiveSyncedSettings(incoming:unknown[],peer='',deviceId?:string):SettingsReceiveResult{
+    if(!Array.isArray(incoming)||incoming.length>SYNC_SETTING_KEYS.length*2)throw Error(t('同步设置批次无效。'));
+    const validByKey=new Map<string,SettingsSnapshot>();
+    let rejected=0;
+    for(const item of incoming){
+      try{
+        const snap=validateSettingsSnapshot(item);
+        const prev=validByKey.get(snap.key);
+        if(!prev||shouldTakeRemote(prev,snap))validByKey.set(snap.key,snap);
+      }catch{rejected++;}
+    }
+    const applied:string[]=[];
+    const conflicts:SettingsConflict[]=[];
+    let skipped=0;
+    this.transaction(()=>{
+      const current=this.readCurrentStudySettings();
+      const metaMap=this.readSettingsMetaMap();
+      const dev=this.localSettingsDeviceId(deviceId);
+      const fastForward=new Map<string,SettingsSnapshot>();
+      const metaOnly=new Map<string,SettingsSnapshot>();
+      const clearConflicts=new Set<string>();
+      const newConflicts=new Map<string,SettingsConflict>();
+      const baselineToPersist:SettingsSnapshot[]=[];
+      const now=Date.now();
+
+      for(const remote of validByKey.values()){
+        const key=remote.key;
+        const localValue=(current as any)[key];
+        const localHash=settingsHash(localValue);
+        let meta=metaMap.get(key);
+        if(!meta){
+          if(localHash===remote.valueHash){
+            metaOnly.set(key,remote);
+            clearConflicts.add(key);
+            skipped++;
+            continue;
+          }
+          if(localHash===settingsHash((DEFAULT_SETTINGS as any)[key])){
+            fastForward.set(key,remote);
+            clearConflicts.add(key);
+            continue;
+          }
+          // 升级前已在本机改过的非默认值：补建基线快照再按正常合并规则判断。
+          const baseline:SettingsSnapshot={key,value:localValue,updatedAt:1,deviceId:dev,valueHash:localHash,ancestors:[]};
+          baselineToPersist.push(baseline);
+          meta={updatedAt:baseline.updatedAt,deviceId:baseline.deviceId,valueHash:baseline.valueHash,ancestors:baseline.ancestors};
+        }
+        const localSnap:SettingsSnapshot={
+          key,value:localValue,updatedAt:meta.updatedAt,deviceId:meta.deviceId||dev,valueHash:localHash,ancestors:meta.ancestors,
+        };
+        const localId=settingVersionId(localSnap),remoteId=settingVersionId(remote);
+        if(localId===remoteId){
+          clearConflicts.add(key);
+          skipped++;
+          continue;
+        }
+        if(remote.ancestors.includes(localId)){
+          fastForward.set(key,remote);
+          clearConflicts.add(key);
+          continue;
+        }
+        if(localSnap.ancestors.includes(remoteId)){
+          skipped++;
+          continue;
+        }
+        if(localSnap.valueHash===remote.valueHash){
+          const winner=shouldTakeRemote(localSnap,remote)?remote:localSnap;
+          const loserId=winner===remote?localId:remoteId;
+          const merged:SettingsSnapshot={
+            ...winner,
+            ancestors:mergeAncestors(winner.ancestors,[loserId],localSnap.ancestors,remote.ancestors),
+          };
+          metaOnly.set(key,merged);
+          clearConflicts.add(key);
+          skipped++;
+          continue;
+        }
+        const existingConflict=this.getSetting(SETTINGS_CONFLICT_PREFIX+key) as SettingsConflict|null;
+        const samePair=existingConflict&&
+          settingVersionId(existingConflict.local)===localId&&
+          settingVersionId(existingConflict.remote)===remoteId;
+        newConflicts.set(key,{
+          key,local:localSnap,remote,peer:peer||existingConflict?.peer||'',
+          detectedAt:samePair?existingConflict.detectedAt:now,
+        });
+      }
+
+      // 联合约束检查：fsrsVersion 与 fsrsWeights 长度必须匹配，避免构造出无法初始化调度器的配置。
+      const candidate:StudySettings={...current};
+      for(const [key,snap] of fastForward)(candidate as any)[key]=snap.value;
+      if(!isCompatibleFsrsPair(candidate.fsrsVersion,candidate.fsrsWeights)){
+        const hasVersion=fastForward.has('fsrsVersion'),hasWeights=fastForward.has('fsrsWeights');
+        if(hasVersion&&hasWeights){
+          fastForward.delete('fsrsVersion');fastForward.delete('fsrsWeights');
+          rejected+=2;
+        }else{
+          for(const key of ['fsrsVersion','fsrsWeights']){
+            const remote=fastForward.get(key);
+            if(!remote)continue;
+            fastForward.delete(key);clearConflicts.delete(key);
+            const meta=metaMap.get(key);
+            const localValue=(current as any)[key],localHash=settingsHash(localValue);
+            const localSnap:SettingsSnapshot={
+              key,value:localValue,updatedAt:meta?.updatedAt??1,deviceId:meta?.deviceId||dev,valueHash:localHash,ancestors:meta?.ancestors??[],
+            };
+            newConflicts.set(key,{key,local:localSnap,remote,peer,detectedAt:now});
+          }
+        }
+      }
+
+      const finalSettings:StudySettings={...current};
+      for(const [key,snap] of fastForward)(finalSettings as any)[key]=snap.value;
+      const validated=normalizeSettings(finalSettings);
+
+      for(const baseline of baselineToPersist)this.writeSettingsMeta(baseline);
+      if(fastForward.size>0){
+        this.setSetting('studySettings',validated);
+        for(const [key,snap] of fastForward){
+          this.writeSettingsMeta(snap);
+          applied.push(key);
+        }
+      }
+      for(const snap of metaOnly.values())this.writeSettingsMeta(snap);
+      for(const key of clearConflicts)this.query('DELETE FROM settings WHERE key=?').run(SETTINGS_CONFLICT_PREFIX+key);
+      for(const [key,conflict] of newConflicts){
+        this.setSetting(SETTINGS_CONFLICT_PREFIX+key,conflict);
+        conflicts.push(conflict);
+      }
+    });
+    return {applied,conflicts,skipped,rejected};
+  }
+
+  listSettingsConflicts():SettingsConflict[]{
+    const rows=this.query("SELECT key,value FROM settings WHERE key GLOB 'settingsSyncConflict:*' ORDER BY key").all() as Array<Record<string,any>>;
+    const current=this.readCurrentStudySettings();
+    const metaMap=this.readSettingsMetaMap();
+    const list:SettingsConflict[]=[];
+    for(const row of rows){
+      try{
+        const item=JSON.parse(String(row.value)) as SettingsConflict;
+        if(!item||!isSyncSettingKey(item.key)||!item.remote)continue;
+        const remote=validateSettingsSnapshot(item.remote);
+        const localValue=(current as any)[item.key],localHash=settingsHash(localValue);
+        const meta=metaMap.get(item.key);
+        if(localHash===remote.valueHash)continue;
+        if(meta&&meta.ancestors.includes(settingVersionId(remote)))continue;
+        const local:SettingsSnapshot={
+          key:item.key,value:localValue,
+          updatedAt:meta?.updatedAt??item.local?.updatedAt??0,
+          deviceId:meta?.deviceId||item.local?.deviceId||'',
+          valueHash:localHash,
+          ancestors:meta?.ancestors??item.local?.ancestors??[],
+        };
+        list.push({key:item.key,local,remote,peer:String(item.peer||''),detectedAt:Number(item.detectedAt)||0});
+      }catch{/* ignore malformed legacy entries */}
+    }
+    return list;
+  }
+
+  resolveSettingsConflict(key:string,choice:'local'|'remote',now=Date.now(),deviceId?:string):SettingsSnapshot{
+    if(!isSyncSettingKey(key)||(choice!=='local'&&choice!=='remote'))throw Error(t('无效的设置冲突选择。'));
+    return this.transaction(()=>{
+      const conflictKey=SETTINGS_CONFLICT_PREFIX+key;
+      const stored=this.getSetting(conflictKey) as SettingsConflict|null;
+      if(!stored||!stored.remote)throw Error(t('设置冲突不存在或已解决。'));
+      const remote=validateSettingsSnapshot(stored.remote);
+      const current=this.readCurrentStudySettings();
+      const metaMap=this.readSettingsMetaMap();
+      const dev=this.localSettingsDeviceId(deviceId);
+      const localValue=(current as any)[key],localHash=settingsHash(localValue);
+      const meta=metaMap.get(key);
+      const localSnap:SettingsSnapshot={
+        key,value:localValue,
+        updatedAt:meta?.updatedAt??stored.local?.updatedAt??0,
+        deviceId:meta?.deviceId||stored.local?.deviceId||dev,
+        valueHash:localHash,
+        ancestors:meta?.ancestors??stored.local?.ancestors??[],
+      };
+      const chosenValue=choice==='local'?localValue:remote.value;
+      const next:StudySettings={...current,[key]:chosenValue};
+      let clearedWeights=false;
+      if(!isCompatibleFsrsPair(next.fsrsVersion,next.fsrsWeights)){
+        if(key==='fsrsVersion'){
+          next.fsrsWeights=[];
+          clearedWeights=true;
+        }else{
+          throw Error(t('FSRS 参数长度与当前 FSRS 模型不匹配，请先处理 FSRS 模型冲突。'));
+        }
+      }
+      const validated=normalizeSettings(next);
+      const finalValue=(validated as any)[key];
+      const resolvedAt=Math.max(Math.floor(now),localSnap.updatedAt+1,remote.updatedAt+1);
+      const resolved:SettingsSnapshot={
+        key,
+        value:finalValue,
+        updatedAt:resolvedAt,
+        deviceId:dev,
+        valueHash:settingsHash(finalValue),
+        ancestors:mergeAncestors([settingVersionId(localSnap),settingVersionId(remote)],localSnap.ancestors,remote.ancestors),
+      };
+      this.setSetting('studySettings',validated);
+      this.writeSettingsMeta(resolved);
+      this.query('DELETE FROM settings WHERE key=?').run(conflictKey);
+      if(clearedWeights){
+        const wMeta=metaMap.get('fsrsWeights');
+        const wAncestors=wMeta?mergeAncestors([settingVersionId(wMeta)],wMeta.ancestors):[];
+        this.writeSettingsMeta({
+          key:'fsrsWeights',updatedAt:Math.max(resolvedAt,(wMeta?.updatedAt??0)+1),deviceId:dev,
+          valueHash:settingsHash([]),ancestors:wAncestors,
+        });
+      }
+      return resolved;
+    });
   }
 
   private insert(node: NodeInput): void {
@@ -203,8 +535,34 @@ export class Repository {
     return rows;
   }
 
+  /**
+   * 2026-11-20：拖高亮棍改锚点边界。只接受「按行」的新区间（from/to 是来源正文里的字符位置），
+   * 重算 quote/prefix/suffix，不动正文与排程。区间为空时拒绝。
+   */
+  setAnchor(input:{id:string;from:number;to:number}):{quote:string;start:number}{
+    const child=this.getNode(input.id);
+    if(!child||child.kind==='folder')throw Error(t('卡片不存在。'));
+    const anchor=child.anchor as Anchor|null;
+    if(!anchor)throw Error(t('这张卡片没有锚点。'));
+    const parent=child.parentId?this.getNode(child.parentId):null;
+    if(!parent)throw Error(t('来源卡片已删除。'));
+    const section=anchor.section==='answer'?'answer':'question';
+    const text=section==='answer'?parent.answer:parent.content;
+    const from=Math.max(0,Math.min(Math.floor(Number(input.from)||0),Math.max(0,text.length-1)));
+    const rawTo=Math.floor(Number(input.to)||0);
+    if(rawTo<=from)throw Error(t('锚点区间为空。'));
+    const to=Math.min(text.length,rawTo);
+    if(to<=from)throw Error(t('锚点区间为空。'));
+    const next:Anchor={...anchor,quote:text.slice(from,to),
+      prefix:text.slice(Math.max(0,from-40),from),suffix:text.slice(to,to+40),start:from};
+    this.query('UPDATE nodes SET anchor=?,updated_at=? WHERE id=?')
+      .run(JSON.stringify(next),new Date().toISOString(),child.id);
+    return {quote:next.quote,start:from};
+  }
+
   anchors(id: string): {id:string;anchor:Anchor}[] {
-    return this.query("SELECT id,anchor,kind FROM nodes WHERE source_id=? AND anchor IS NOT NULL AND deleted_at IS NULL")
+    // 2026-11-20：主题卡也会带锚点（Alt+D 生成黄色高亮），别把它挡在查询外，否则主题锚点永远不显示。
+    return this.query("SELECT id,anchor,kind FROM nodes WHERE source_id=? AND kind IN ('material','cloze','topic') AND anchor IS NOT NULL AND deleted_at IS NULL")
       .all(id).map(row=>{const anchor=JSON.parse(String(row.anchor));
     // 把来源节点 id 一起给渲染层，供 Ctrl+点击高亮跳转
     return {id:String(row.id),anchor:{...anchor,nodeId:String(row.id),highlight:anchor.highlight||(row.kind==='cloze'?'cloze':'extract')}};});
@@ -212,6 +570,7 @@ export class Repository {
 
   save(input: SaveInput): {revision:number} {
     if(typeof input.content!=='string'||typeof input.answer!=='string')throw Error(t('无效正文。'));
+    const previous=this.getNode(input.id);
     const body=storeDocuments(input.content,input.answer,input.documents);
     const {content,answer}=projectStoredDocuments(body);
     const result = this.query(`UPDATE nodes SET content=?,answer=?,content_objects=?,answer_objects=?,revision=revision+1,updated_at=?,
@@ -220,7 +579,25 @@ export class Repository {
       .run(body.content,body.answer,body.content_objects,body.answer_objects,new Date().toISOString(),studyReady('cloze',content,answer),studyReady('topic',content,answer),
         content,answer,input.id,input.revision);
     if(!result.changes) throw Error(t('这篇卡片已在其他位置修改。当前编辑仍在窗口里，请复制内容后重新打开。'));
+    // 2026-11-19：正文改了就把子卡片的锚点区间搬到新文本上（删字收缩、头尾加字扩张）
+    if(previous)this.remapChildAnchors(input.id,previous.content,content,previous.answer,answer);
     return {revision:input.revision+1};
+  }
+
+  /** 把这张卡的锚点跟着编辑一起挪；区间被删光时才丢掉锚点。 */
+  private remapChildAnchors(parentId:string,oldContent:string,newContent:string,oldAnswer:string,newAnswer:string):void{
+    if(oldContent===newContent&&oldAnswer===newAnswer)return;
+    const rows=this.query('SELECT id,anchor FROM nodes WHERE parent_id=? AND anchor IS NOT NULL AND deleted_at IS NULL').all(parentId) as Array<{id:string;anchor:string}>;
+    for(const row of rows){
+      let anchor:Anchor;
+      try{anchor=JSON.parse(String(row.anchor)) as Anchor;}catch{continue;}
+      const section=anchor.section==='answer'?'answer':'question';
+      const oldText=section==='answer'?oldAnswer:oldContent,newText=section==='answer'?newAnswer:newContent;
+      if(oldText===newText)continue;
+      const next=remapAnchor(oldText,newText,anchor);
+      if(next)this.query('UPDATE nodes SET anchor=? WHERE id=?').run(JSON.stringify(next),row.id);
+      else this.query('UPDATE nodes SET anchor=NULL WHERE id=?').run(row.id);
+    }
   }
 
   // The caller validates placement and records the applied version in the same transaction.
@@ -271,7 +648,7 @@ export class Repository {
       if(input.kind!=='folder'&&!parent)throw Error(t('请先在文件夹内新建主题或卡片。'));
       if(input.kind==='folder'&&parent&&parent.kind!=='folder')throw Error(t('子文件夹只能建立在文件夹内。'));
       let content='',answer='',anchor:Anchor|null=null,sourceId:string|null=null;
-      const excerpt = input.kind==='material' || input.kind==='cloze';
+      const excerpt = input.kind==='material' || input.kind==='cloze' || input.kind==='topic';
       if(excerpt && input.from !== undefined && input.to !== undefined && input.to>input.from) {
         if(!parent || parent.kind==='folder' || parent.revision!==input.revision) throw Error(t('来源正文已改变，请重新选择。'));
         const section=input.section || 'question';
@@ -280,7 +657,8 @@ export class Repository {
         if(!Number.isInteger(from)||!Number.isInteger(to)||from<0||to>source.length)throw Error(t('选区无效。'));
         const selected=source.slice(from,to);
         if(!selected.trim())throw Error(t('选区为空。'));
-        anchor={...makeAnchor(source,from,to,parent.kind==='cloze'||section==='answer'?section:undefined),highlight:input.kind==='cloze'?'cloze':'extract'};
+        anchor={...makeAnchor(source,from,to,parent.kind==='cloze'||section==='answer'?section:undefined),
+          highlight:input.kind==='cloze'?'cloze':input.kind==='topic'?'topic':'extract'};
         sourceId=parent.id;
         if(input.kind==='cloze'){content=source.slice(0,from)+'[...]'+source.slice(to);answer=selected;}
         else content=selected;
@@ -321,7 +699,7 @@ export class Repository {
       .run(title.trim(),new Date().toISOString(),id).changes)throw Error(t('项目已删除。'));
   }
 
-  move(id:string,parentId:string|null,restore?:{expectedParentId:string|null},peerId?:string):void {
+  move(id:string,parentId:string|null,restore?:{expectedParentId:string|null},peerId?:string,allowCardParent=false):void {
     this.transaction(()=>{
       const node=this.getNode(id),target=parentId?this.getNode(parentId):null;
       // 任何卡片都可以移动（此前只允许 folder/topic，导致提取与检测卡"移至…"直接报错）
@@ -329,7 +707,7 @@ export class Repository {
       if(restore&&node.parentId!==restore.expectedParentId)throw Error(t('卡片位置已变化，无法撤销这次移动。'));
       const peer=peerId?this.getNode(peerId):null;
       if(peerId&&(!peer||peer.parentId!==parentId||peer.id===id))throw Error(t('目标位置不存在。'));
-      if(target&&target.kind!=='folder'&&(node.kind==='folder'||!restore&&!peer))throw Error(t('只能移动到文件夹里。'));
+      if(target&&target.kind!=='folder'&&(node.kind==='folder'||!restore&&!peer&&!allowCardParent))throw Error(t('只能移动到文件夹里。'));
       if(id===parentId||parentId&&this.path(parentId).some(ancestor=>ancestor.id===id))throw Error(t('无法移动到自身或自己的下级。'));
       this.query('UPDATE nodes SET parent_id=?,updated_at=? WHERE id=?').run(parentId,new Date().toISOString(),id);
       if(node.kind!=='folder')this.updateBranchFolder(id,target?.kind==='folder'?target.id:target?.folderId??null);
@@ -342,7 +720,7 @@ export class Repository {
   }
 
   removeSyncedNode(node:Material):void{this.trash.removeSyncedNode(node);}
-  remove(id:string){return this.trash.remove(id);}
+  remove(id:string,mode?:'single'|'branch'){return this.trash.remove(id,mode);}
 
   undoCreation(id:string): {parentId:string|null;anchor:Anchor|null} {
     return this.transaction(()=>{

@@ -104,12 +104,12 @@ export class CardDependencies {
     for(const [id,children] of downstream){
       if(!this.mastered(id))for(const child of children)blocked.add(child);
     }
-    // 已锁的先修仍会阻塞它的后续卡，即使它自己最近评分为良好。
+    // 已锁的先修仍会阻塞它的后续卡，即使它自己最近评价为良好。
     for(const id of blocked)for(const child of downstream.get(id)??[])blocked.add(child);
     return blocked;
   }
 
-  // 先修卡要连续 N 次（N=masteryReps）有效评分都达到「良好/简单」才算掌握。
+  // 先修卡要连续 N 次（N=masteryReps）有效评价都达到「良好/简单」才算掌握。
   private mastered(id:string):boolean{
     const need=Math.max(1,Math.min(9,Math.round(this.masteryReps(id))));
     const latest=this.effective(id);
@@ -133,7 +133,7 @@ export class CardDependencies {
     `).get(id,card.state) as {rating:number;reviewed_at:number}|undefined;
     if(active)return {rating:Number(active.rating),at:Number(active.reviewed_at)};
 
-    // Anki 导入只保留历史评分，历史行没有排程快照；匹配导入排程的最近复习秒。
+    // Anki 导入只保留历史评价，历史行没有排程快照；匹配导入排程的最近复习秒。
     const last=Date.parse(JSON.parse(card.state)?.lastReviewAt??'');
     if(!Number.isFinite(last))return null;
     const second=Math.floor(last/1000)*1000;

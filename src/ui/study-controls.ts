@@ -28,7 +28,9 @@ interface StudyControlsActions {
   enroll(id:string):void;
 }
 
-function intervalText(dueAt:number):string{
+function intervalText(dueAt:number,days?:number):string{
+  // 2026-11-19：复习卡按 Anki 口径显示整数天；学习中的卡仍按「距现在多久」显示。
+  if(days!==undefined)return t('{0} 天',days);
   const minutes=Math.max(1,Math.round((dueAt-Date.now())/60000));
   if(minutes<60)return t('{0} 分',minutes);
   if(minutes<1440)return t('{0} 小时',+(minutes/60).toFixed(1));
@@ -59,7 +61,7 @@ export function renderStudyCounts(study:StudySnapshot|null,answerShown:boolean):
   const counts=study.counts;
   if(study.mode==='reading'){
     host.textContent=t('待处理 {0}',counts.readingDue);
-    host.setAttribute('aria-label',t('全部文件夹待处理 {0}',counts.readingDue));
+    host.setAttribute('aria-label',study.folderId?t('「{0}」待处理 {1}',study.folderTitle,counts.readingDue):t('全部文件夹待处理 {0}',counts.readingDue));
     return;
   }
   const scope=study.folderId?'「'+study.folderTitle+'」':t('全部牌组');
@@ -88,13 +90,16 @@ export function renderStudyBar(state:StudyControlsState,actions:StudyControlsAct
   document.body.classList.toggle('study-cards-mode',study?.mode==='cards');
   const buttons=element('study-buttons');buttons.replaceChildren();
   element('study-more').hidden=!study;
+  element<HTMLButtonElement>('study-bury').disabled=!item||item.id!==current?.id||busy||editing;
+  // 2026-11-19：搁置按队列分叫法——复习里叫「记忆搁置」，待办里叫「待办搁置」
+  element<HTMLButtonElement>('study-bury').textContent=t(item?.kind==='reading'?'待办搁置':'记忆搁置');
   const priority=element<HTMLButtonElement>('study-priority');
   priority.hidden=item?.kind!=='reading';
   if(item?.kind==='reading')priority.textContent=t('优先级 {0}',item.priority);
   const edit=element<HTMLButtonElement>('study-edit');
   // 待办（材料）也显示左下角「编辑」，快捷键同样是 Alt+E。
   edit.hidden=!item||item.id!==current?.id;
-  edit.textContent=item?.kind==='reading'?t('编辑'):(editing?t('完成编辑'):t('编辑'));edit.disabled=busy;
+  edit.textContent=editing?t('完成编辑'):t('编辑');edit.disabled=busy;
   const pause=document.getElementById('study-pause') as HTMLButtonElement|null;
   if(pause){pause.hidden=item?.kind!=='fsrs';pause.disabled=busy;}
   element<HTMLButtonElement>('study-undo').disabled=busy||!canUndo;
@@ -102,10 +107,10 @@ export function renderStudyBar(state:StudyControlsState,actions:StudyControlsAct
   if(!study)return;
   element('study-status-text').textContent=t('{0} · {1} · 本次已处理 {2}',study.folderTitle,t(item?(item.kind==='fsrs'?'检测卡':'材料'):'当前已完成'),study.completed);
 
-  function addChoice(label:string,run:()=>void,style='',command?:CommandId,dueAt?:number):HTMLButtonElement{
+  function addChoice(label:string,run:()=>void,style='',command?:CommandId,dueAt?:number,days?:number):HTMLButtonElement{
     const choice=document.createElement('div');choice.className='study-choice';
     if(dueAt!==undefined){
-      const interval=document.createElement('small');interval.className='study-interval';interval.textContent=intervalText(dueAt);choice.append(interval);
+      const interval=document.createElement('small');interval.className='study-interval';interval.textContent=intervalText(dueAt,days);choice.append(interval);
     }
     const button=document.createElement('button');button.className='study-action '+style;button.disabled=busy||editing;
     const text=document.createElement('span');text.textContent=label;button.append(text);
@@ -121,11 +126,13 @@ export function renderStudyBar(state:StudyControlsState,actions:StudyControlsAct
   }
   if(item.id!==current?.id){addChoice(t('返回当前复习卡片'),()=>actions.returnToCard(item.id),'primary');return;}
   if(item.kind==='reading'){
-    addChoice(t('读完'),()=>actions.grade({action:'read'}),'grade-good','readDone',item.pushPreview?.read);
-    addChoice(t('稍后'),()=>actions.grade({action:'later'}),'','readLater',item.pushPreview?.later);
+    // 2026-11-19：待办预览也按整天显示（和复习一致），不再出现「23.9 小时」这种小数
+    const days=(dueAt?:number)=>dueAt===undefined?undefined:Math.max(1,Math.round((dueAt-Date.now())/86400000));
+    addChoice(t('读完'),()=>actions.grade({action:'read'}),'grade-good','readDone',item.pushPreview?.read,days(item.pushPreview?.read));
+    addChoice(t('稍后'),()=>actions.grade({action:'later'}),'','readLater',item.pushPreview?.later,days(item.pushPreview?.later));
     addChoice(t('置于末尾'),()=>actions.grade({action:'soon'}),'','readSoon');
     addChoice(t('完成'),()=>actions.grade({action:'dismiss'}),'','readDismiss');
-    if(item.isTest)addChoice(t('加入复习'),()=>actions.enroll(item.id),'','toggleReview');
+    if(item.isTest)addChoice(t('加入复习'),()=>actions.enroll(item.id),'','enrollCard');
     return;
   }
   if(!answerShown){addChoice(t('显示答案'),actions.revealAnswer,'primary','showAnswer');return;}
@@ -135,6 +142,6 @@ export function renderStudyBar(state:StudyControlsState,actions:StudyControlsAct
   ] as const){
     if(!actions.ratingAvailable(rating))continue;
     const preview=item.preview.find(result=>result.rating===rating);
-    addChoice(label,()=>actions.grade({rating}),style,command,preview?.dueAt);
+    addChoice(label,()=>actions.grade({rating}),style,command,preview?.dueAt,preview?.days);
   }
 }

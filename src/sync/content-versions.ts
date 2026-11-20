@@ -45,7 +45,7 @@ export function validateContentVersion(version:ContentVersion):void{
   if(anchor!==null&&(!anchor||![anchor.quote,anchor.prefix,anchor.suffix].every(text=>typeof text==='string')||
       (anchor.start!==undefined&&!Number.isSafeInteger(anchor.start))||
       (anchor.section!==undefined&&!['question','answer'].includes(anchor.section))||
-      (anchor.highlight!==undefined&&!['extract','cloze'].includes(anchor.highlight)))){
+      (anchor.highlight!==undefined&&!['extract','cloze','topic'].includes(anchor.highlight)))){
     throw Error(t('收到无效的摘录锚点。'));
   }
 }

@@ -80,7 +80,7 @@ export function migrateLibrary(repository:Repository):void{
   if(version<5)repository.transaction(()=>migrateAnki(repository));
   if(version<6)repository.transaction(()=>migrateWorkflow(repository));
   if(version<7)repository.transaction(()=>{
-    // 阅读点。字符偏移，0 表示没有记录；切换/评分时由渲染层写回。
+    // 阅读点。字符偏移，0 表示没有记录；切换/评价时由渲染层写回。
     repository.db.exec('ALTER TABLE reading_state ADD COLUMN reading_position INTEGER NOT NULL DEFAULT 0;PRAGMA user_version=7;');
   });
   if(version<8)repository.transaction(()=>{
@@ -146,4 +146,64 @@ export function migrateLibrary(repository:Repository):void{
       PRAGMA user_version=14;
     `);
   });
+  // 旧版（2026-11-19）：搁置改成「队列状态」而不是改到期日；同时给跨日学习与
+  // 学习步序留出真正的列，避免继续靠 stage + due_at 反推。
+  //   buried_until = 0 表示未搁置；>0 表示搁置到该时间戳（下一个日切点），过期自然失效。
+  //   learning_step = 当前学习步序号（0 表示第 1 步）。
+  //   day_learning = 1 表示这张卡是跨日学习（对应 Anki 的 DayLearn）。
+  if(version<15)repository.transaction(()=>{
+    const columns=new Set(repository.query('PRAGMA table_info(review_cards)').all().map(row=>String(row.name)));
+    if(!columns.has('buried_until'))repository.db.exec('ALTER TABLE review_cards ADD COLUMN buried_until INTEGER NOT NULL DEFAULT 0');
+    if(!columns.has('learning_step'))repository.db.exec('ALTER TABLE review_cards ADD COLUMN learning_step INTEGER NOT NULL DEFAULT 0');
+    if(!columns.has('day_learning'))repository.db.exec('ALTER TABLE review_cards ADD COLUMN day_learning INTEGER NOT NULL DEFAULT 0');
+    repository.db.exec(`
+      CREATE INDEX IF NOT EXISTS review_buried ON review_cards(buried_until);
+      PRAGMA user_version=15;
+    `);
+  });
+  // 旧版（2026-11-19）：待办卡也要能「搁置而不改到期日」，与 review_cards 对齐。
+  if(version<16)repository.transaction(()=>{
+    const columns=new Set(repository.query('PRAGMA table_info(reading_state)').all().map(row=>String(row.name)));
+    if(!columns.has('buried_until'))repository.db.exec('ALTER TABLE reading_state ADD COLUMN buried_until INTEGER NOT NULL DEFAULT 0');
+    repository.db.exec(`
+      CREATE INDEX IF NOT EXISTS reading_buried ON reading_state(buried_until);
+      PRAGMA user_version=16;
+    `);
+  });
+  // 旧版（2026-11-19）：回填 day_learning 与 learning_step。
+  //   - learning_step 直接从 state JSON 的 learningStep 抄过来（ts-fsrs 6 的状态是驼峰命名）；
+  //   - day_learning 用「默认 4 点日切」判断：到期在明天日切之后的，视为跨日学习。
+  //     用户自定义日切小时的情况会在下次评价时被重新写准，这里只做一次性近似回填。
+  if(version<17)repository.transaction(()=>{
+    const now=new Date(),boundary=new Date(now);
+    boundary.setHours(4,0,0,0);
+    if(boundary.getTime()>now.getTime())boundary.setDate(boundary.getDate()-1);
+    boundary.setDate(boundary.getDate()+1);
+    repository.query('UPDATE review_cards SET learning_step=COALESCE(json_extract(state,\'$.learningStep\'),0)').run();
+    repository.query('UPDATE review_cards SET day_learning=CASE WHEN stage IN(1,3) AND due_at>=? THEN 1 ELSE 0 END').run(boundary.getTime());
+    repository.db.exec('PRAGMA user_version=17;');
+  });
+  // 旧版（2026-11-19）：17 版回填把字段名写成了 learning_steps（那是调度器入参名），
+  // 真实状态 JSON 用的是驼峰 learningStep，所以已经迁到 17 的库要按正确字段重扫一次。
+  if(version<18)repository.transaction(()=>{
+    repository.query('UPDATE review_cards SET learning_step=COALESCE(json_extract(state,\'$.learningStep\'),0)').run();
+    repository.db.exec('PRAGMA user_version=18;');
+  });
+  // 全局默认设置的同步元数据；牌组覆盖和界面状态不进入此表。
+  if(version<19)repository.transaction(()=>repository.db.exec(`
+    CREATE TABLE IF NOT EXISTS settings_meta(
+      key TEXT PRIMARY KEY,
+      updated_at INTEGER NOT NULL,
+      device_id TEXT NOT NULL,
+      value_hash TEXT NOT NULL,
+      ancestors TEXT NOT NULL DEFAULT '[]'
+    );
+    PRAGMA user_version=19;
+  `));
+  // 兼容早期未发布 schema 19 骨架（缺少 ancestors 列时补齐）。
+  const metaColumns=new Set(repository.query('PRAGMA table_info(settings_meta)').all().map(row=>String(row.name)));
+  if(metaColumns.size>0&&!metaColumns.has('ancestors'))
+    repository.db.exec("ALTER TABLE settings_meta ADD COLUMN ancestors TEXT NOT NULL DEFAULT '[]'");
+
+
 }

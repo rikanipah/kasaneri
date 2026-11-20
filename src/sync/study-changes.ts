@@ -1,6 +1,7 @@
 import { t } from '../core/i18n';
 import {createHash,randomUUID} from 'node:crypto';
 import type {Repository} from '../data/database';
+import {dayStartMs} from '../study/quota';
 import type {SyncOp} from './engine';
 
 export const studyChangeSession='sync-schedule-v1';
@@ -41,8 +42,14 @@ export function writeSchedule(db:Repository,id:string,value:Schedule):void{
     .run(r.enabled,r.due_at,r.interval_ms,r.reps,r.last_read_at,id);
   if(value.review){
     const c=value.review;
-    db.query('UPDATE review_cards SET enabled=?,due_at=?,stage=?,state=?,algorithm_version=?,updated_at=?,revision=revision+1 WHERE node_id=?')
-      .run(c.enabled,c.due_at,c.stage,c.state,c.algorithm_version,Date.now(),id);
+    let parsed:any=null;try{parsed=JSON.parse(c.state);}catch{}
+    const learningStep=Math.max(0,Math.floor(Number(parsed?.learningStep??0)))||0;
+    const refNow=parsed?.lastReviewAt?new Date(parsed.lastReviewAt).getTime():Date.now();
+    const rawHour=Number((db.getSetting('studySettings') as any)?.dayStartHour??4);
+    const hour=Number.isFinite(rawHour)&&rawHour>=0&&rawHour<=23?Math.round(rawHour):4;
+    const dayLearning=(c.stage===1||c.stage===3)&&Number.isFinite(refNow)&&c.due_at>=dayStartMs(refNow,hour)+86400000?1:0;
+    db.query('UPDATE review_cards SET enabled=?,due_at=?,stage=?,day_learning=?,learning_step=?,state=?,algorithm_version=?,updated_at=?,revision=revision+1 WHERE node_id=?')
+      .run(c.enabled,c.due_at,c.stage,dayLearning,learningStep,c.state,c.algorithm_version,Date.now(),id);
   }
   if(value.leech)db.query("INSERT OR IGNORE INTO node_tags(node_id,tag) VALUES(?,'leech')").run(id);
   else db.query("DELETE FROM node_tags WHERE node_id=? AND tag='leech'").run(id);
@@ -73,7 +80,7 @@ export function sameSchedule(a:Schedule,b:Schedule):boolean{
     sameReviewProgress(a.review,b.review)&&sameReadingProgress(a.reading,b.reading);
 }
 
-/** 只同步标签变化（hold / buried），排程字段两边保持一致，所以不会跟评分/排程操作互相覆盖。 */
+/** 只同步标签变化（hold / buried），排程字段两边保持一致，所以不会跟评价/排程操作互相覆盖。 */
 export function recordTagChange(db:Repository,id:string,at:number,before:Schedule,after:Schedule):void{
   if(sameTag(before.hold,after.hold)&&sameTag(before.buried,after.buried))return;
   store(db,makeChange(id,at,before,after,{action:'tags'}));

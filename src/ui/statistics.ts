@@ -163,7 +163,7 @@ export class StatisticsDialog {
   const seconds=(value:any)=>value===null||value===undefined?'—':(Number(value)>=3600?t('{0} 小时',number(Number(value)/3600)):t('{0} 分',number(Number(value)/60)));
   // 字段对齐 Anki 卡片信息（复习次数/首次复习/最近复习/间隔/总用时/平均用时/难度…）
   for(const [label,value] of [
-    [t('卡片编号'),data.id],[t('当前状态'),data.reviewEnabled?t('FSRS 复习'):data.pushEnabled?t('待办中'):t('已搁置')],
+    [t('卡片编号'),data.id],[t('当前状态'),(data.tags||[]).includes('buried')?t('已搁置'):data.reviewEnabled?t('FSRS 复习'):data.pushEnabled?((data.reviewCount??0)>0?t('待办暂停'):t('待办中')):t('已完成')],
     [t('FSRS 模型'),data.settings.fsrsVersion],[t('已学次数'),state?.reps??0],[t('复习次数'),data.reviewCount??0],
     [t('遗忘次数'),state?.lapses??0],[t('稳定性（天）'),number(state?.stability)],
     [t('难度（1–10）'),number(state?.difficulty)],[t('当前可回忆率'),data.retrievability===null?'—':number(data.retrievability*100)+'%'],
@@ -188,13 +188,13 @@ export class StatisticsDialog {
 
   this.content.append(el('h4',t('复习记录')));
   const scroll=el('div','','statistics-history'),table=document.createElement('table'),head=document.createElement('thead'),tr=document.createElement('tr');
-  for(const name of [t('日期'),t('类型'),t('评分'),t('间隔'),'D',t('用时'),t('状态')])tr.append(el('th',name));
+  for(const name of [t('日期'),t('类型'),t('评价'),t('间隔'),'D',t('用时'),t('状态')])tr.append(el('th',name));
   head.append(tr);table.append(head);const tbody=document.createElement('tbody');
   for(const row of data.history){
     const tr=document.createElement('tr');
     tr.append(el('td',date(row.at)));
     const typeCell=el('td',''),badge=document.createElement('span');
-    // 排程事件（待办暂停 / 返回复习 / 搁置 / 留存判定）没有评分，类型列直接写事件名
+    // 排程事件（待办暂停 / 返回复习 / 搁置 / 留存判定）没有评价，类型列直接写事件名
     if(row.kind==='event'){badge.className='card-type is-event';badge.textContent=row.label||t('排程变更');}
     else{badge.className='card-type '+typeClass(row.type);badge.textContent=typeLabel(row.type);}
     typeCell.append(badge);tr.append(typeCell);
@@ -288,7 +288,12 @@ export class StatisticsDialog {
  async openOverview(folderId?:string,days=30){
   const sequence=++this.sequence,data=await this.request('statistics',{folderId,days});if(sequence!==this.sequence)return;this.begin(t('统计 · {0}',data.title));this.tabs(folderId,days,'review');
   const metrics=el('div','','statistics-metrics');for(const [key,label] of [['total',t('卡片总数')],['tests',t('检测卡')],['newCards',t('FSRS 新卡')],['learned',t('已学复习卡')],['pushing',t('待办中')],['suspended',t('暂停复习')],['leeches',t('难记卡片')]])this.metric(metrics,label,data.summary[key]);
-  const answers=data.ratings.reduce((sum:number,row:any)=>sum+row.count,0),forgot=data.ratings.find((row:any)=>row.rating===1)?.count||0;this.metric(metrics,t('期间回答次数'),answers);this.metric(metrics,t('期间答对率'),answers?number((answers-forgot)/answers*100)+'%':'—');
+  const answers=data.ratings.reduce((sum:number,row:any)=>sum+row.count,0),forgot=data.ratings.find((row:any)=>row.rating===1)?.count||0;
+  // 2026-11-19：今日复习量按 Anki 口径拆开——复习卡 / 新卡与学习（含重学）分开数，不混在一起。
+  const todayStats=data.today||{review:0,learning:0};
+  this.metric(metrics,t('今日复习（复习卡）'),todayStats.review);
+  this.metric(metrics,t('今日学习（新卡/学习/重学）'),todayStats.learning);
+  this.metric(metrics,t('期间回答次数'),answers);this.metric(metrics,t('期间答对率'),answers?number((answers-forgot)/answers*100)+'%':'—');
   // 对齐 Anki 的"学习天数 / 平均每日"口径
   this.metric(metrics,t('学习天数'),(data.studiedDays??0)+' / '+days);
   this.metric(metrics,t('平均（含未学习天）'),t('{0} 次/天',number(answers/days)));

@@ -1,6 +1,6 @@
 import {cpSync,mkdirSync,renameSync,readdirSync,realpathSync} from 'node:fs';
 import {resolve,join} from 'node:path';
-import {copyNativeDependencies} from './native-dependencies.mjs';
+import {copyNativeDependencies,pruneForeignPlatforms} from './native-dependencies.mjs';
 import {copyLicenses} from './licenses.mjs';
 import {writeWindowsChecksums} from './windows-checksums.mjs';
 import {copyApplication,productName} from './application-files.mjs';
@@ -11,6 +11,7 @@ cpSync(realpathSync('node_modules/electron/dist'),output,{recursive:true});
 const app=join(output,'resources','app');
 copyApplication(app);
 copyNativeDependencies(app);
+pruneForeignPlatforms(app,'win32');
 copyLicenses(join(output,'licenses'));
 const exe=join(output,productName+'.exe');
 renameSync(join(output,'electron.exe'),exe);

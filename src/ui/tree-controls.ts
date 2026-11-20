@@ -1,5 +1,5 @@
 import { t } from '../core/i18n';
-import type { NodeKind } from '../core/model';
+import type { NodeKind,TreeNode } from '../core/model';
 import { setIcon } from './icons';
 
 export type TreeType='topic'|'material'|'cloze';
@@ -89,3 +89,62 @@ export function bindTreeFilters(host:HTMLElement,pick:(type:TreeType)=>void):voi
     button.onclick=event=>{event.preventDefault();pick(button.dataset.type as TreeType);};
   }
 }
+
+/** 2026-11-17：两棵树的表头搜索。点开输入即按标题全文检索卡片，回车或点击打开。 */
+export function bindTreeSearch(popover:HTMLElement,search:(query:string)=>Promise<TreeNode[]>,pick:(id:string)=>void):void{
+  const input=popover.querySelector<HTMLInputElement>('.tree-search-input')!;
+  const results=popover.querySelector<HTMLElement>('.tree-search-results')!;
+  let timer:ReturnType<typeof setTimeout>|undefined,version=0,entries:TreeNode[]=[],active=-1;
+  const close=()=>{if(popover.matches(':popover-open'))popover.hidePopover();};
+  const mark=()=>{
+    [...results.children].forEach((child,index)=>child.classList.toggle('is-active',index===active));
+    results.children[active]?.scrollIntoView({block:'nearest'});
+  };
+  const show=(nodes:TreeNode[]|null)=>{
+    entries=nodes??[];active=nodes?.length?0:-1;
+    results.replaceChildren();
+    if(nodes&&!nodes.length){
+      const empty=document.createElement('p');empty.className='tree-search-empty';empty.textContent=t('没有匹配的卡片');
+      results.append(empty);return;
+    }
+    for(const node of entries){
+      const button=document.createElement('button');
+      button.type='button';button.setAttribute('role','option');button.dataset.id=node.id;button.title=node.title;
+      const badge=document.createElement('span');badge.className='tree-type tree-type-'+node.kind;badge.textContent=node.kind==='cloze'?'L':'T';
+      badge.setAttribute('aria-hidden','true');
+      const text=document.createElement('span');text.className='tree-name';text.textContent=node.title;
+      button.append(badge,text);
+      button.onclick=()=>{const id=node.id;close();pick(id);};
+      results.append(button);
+    }
+    mark();
+  };
+  const run=async()=>{
+    const query=input.value.trim(),current=++version;
+    if(!query){show(null);return;}
+    try{
+      const nodes=await search(query);
+      if(current===version)show(nodes);
+    }catch{/* 出错时保留上一次的结果，不打断输入 */}
+  };
+  input.oninput=()=>{clearTimeout(timer);timer=setTimeout(()=>void run(),150);};
+  input.onkeydown=event=>{
+    if(event.key==='ArrowDown'||event.key==='ArrowUp'){
+      if(!entries.length)return;
+      event.preventDefault();
+      active=(active+(event.key==='ArrowDown'?1:entries.length-1))%entries.length;
+      mark();
+    }else if(event.key==='Escape'){
+      event.preventDefault();close();
+    }else if(event.key==='Enter'){
+      const node=entries[active]??entries[0];
+      if(!node)return;
+      event.preventDefault();close();pick(node.id);
+    }
+  };
+  popover.addEventListener('toggle',event=>{
+    if((event as Event&{newState?:string}).newState!=='open')return;
+    clearTimeout(timer);version++;input.value='';show(null);input.focus();
+  });
+}
+

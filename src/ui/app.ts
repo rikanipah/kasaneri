@@ -1,11 +1,11 @@
 import {arrangeContextMenu,loadContextMenus} from './context-menu-settings';
 import {localizeMarkup} from './localize-markup';
 import { t } from '../core/i18n';
-import { ReadingEditor,type AttachmentTarget } from './editor';
+import { ReadingEditor,type AttachmentTarget,type EditorMode } from './editor';
 import { readLegacyDocument,type AttachmentDocument,type CardDocuments } from '../core/attachment-document';
 import {editImageOcclusion} from './image-occlusion';
 import {DirectoryTree} from './tree';
-import {bindTreeFilters,bindTreeSort,updateTreeFilters,updateTreeToggle,type TreeType} from './tree-controls';
+import {bindTreeFilters,bindTreeSearch,bindTreeSort,updateTreeFilters,updateTreeToggle,type TreeType} from './tree-controls';
 import {setIcon,type IconName} from './icons';
 import {tagFromLabel,tagLabel} from '../core/tags';
 import {CardBrowser} from './browser';
@@ -18,6 +18,10 @@ import {TerminalDialog} from './terminal';
 import {PreferencesDialog,type Configuration,type PreferenceTab} from './preferences';
 import {COMMANDS,DEFAULT_SETTINGS,DEFAULT_SHORTCUTS,shortcutFromEvent,type CommandId} from '../core/settings';
 import {hasImageMask,parseAssetEmbed,type ImageOcclusionUndo} from '../core/image-occlusion';
+import {isDirty,cardPresentation,type Draft} from './draft';
+import {createNavigationHistory} from './navigation';
+import {createUndoStack,type UndoEntry} from './undo-stack';
+import type { StudyService } from '../study/study';
 import type { AgainChildCandidate,AgainChildSelection,Anchor,Material,NodeKind,TreeNode,FolderCounts,StudySnapshot,DeckConfiguration,LaunchRequest,CardRelationKey } from '../core/model';
 
 localizeMarkup();
@@ -32,7 +36,13 @@ const statistics=new StatisticsDialog(request,change=>{
   }});
   void enqueue(refreshPrerequisiteQueues);
 });
-const trash=new TrashDialog(request,()=>void enqueue(refreshRelations));
+const trash=new TrashDialog(request,(id,parentId)=>void enqueue(async()=>{
+  await refreshAnchors();
+  await tree.refresh([null,parentId,id]);
+  if(study){study=await request<StudySnapshot>('reviewRefresh');await presentStudy();}
+  await refreshRelations();await refreshCounts();
+  if(browser.visible)void browser.refresh();
+}));
 function shortcutKey(id:CommandId):string{try{return configuration?.shortcuts?.[id]||'';}catch{return '';}}
 function shortcutTitle(label:string,id:CommandId):string{const key=shortcutKey(id),text=t(label);return key?t('{0}（快捷键 {1}）',text,key):text;}
 // 卡片状态徽标（右上角小字），替代此前的顶部提示
@@ -45,33 +55,26 @@ function applyCardBadge():void{
   // 新建还没复习过的检测卡在待办里叫「待办中」；主题/提取待办停用叫「已搁置」；点「完成」叫「已完成」。
   const isCard=current?.note.kind==='cloze';
   if(flags?.hold){badge.hidden=false;badge.textContent=t('留存判定');badge.title=t('留存判定：暂存点，可在浏览卡片里取消或删除');return;}
-  if(flags?.buried){badge.hidden=false;badge.textContent=t('已搁置');badge.title=t('已搁置到明天（下一个日切点会自动回到队列）');return;}
+  // 2026-11-17：待办暂停/已搁置 不在右上角显示，改到「卡片标签」里看
+  if(flags?.buried){badge.hidden=true;badge.textContent='';return;}
   if(!id){badge.hidden=true;badge.textContent='';return;}
   if(flags?.dismissed){badge.hidden=false;badge.textContent=t('已完成');badge.title=t('这张卡片已完成：保留内容，不再出现在待办队列');return;}
   if(isCard){
     if(flags?.reviewEnabled!==false){badge.hidden=true;badge.textContent='';return;}
-    if(flags?.pushEnabled===false||flags?.reviewed){badge.textContent=t('待办暂停');badge.title=t('这张检测卡的复习已暂停（Anki 迁移的暂停卡也在这里），仍可在待办里读到');}
+    if(flags?.pushEnabled===false||flags?.reviewed){badge.hidden=true;badge.textContent='';return;}
     else{badge.textContent=t('待办中');badge.title=t('这张检测卡在待办队列里（复习尚未开启）');}
     badge.hidden=false;return;
   }
-  if(flags?.pushEnabled===false){badge.hidden=false;badge.textContent=t('已搁置');badge.title=t('这张主题／提取的待办已停用（不会出现在待办队列）');return;}
+  if(flags?.pushEnabled===false){badge.hidden=true;badge.textContent='';return;}
   badge.hidden=true;badge.textContent='';
 }
-const cardFlags=new Map<string,{enabled?:boolean;reviewEnabled?:boolean;pushEnabled?:boolean;buried?:boolean;hold?:boolean;reviewed?:boolean;dismissed?:boolean}>();
+const cardFlags=new Map<string,{enabled?:boolean;reviewEnabled?:boolean;pushEnabled?:boolean;buried?:boolean;buriedReview?:boolean;buriedTodo?:boolean;hold?:boolean;reviewed?:boolean;dismissed?:boolean}>();
+// 2026-11-19：锚点缓存——切卡时先用缓存把高亮画出来，新请求回来再覆盖，不必每次等 IPC。
+const anchorCache=new Map<string,Anchor[]>();
 // 内嵌终端（每卡片一个对话框，PTY 生命周期由对话框管理）。
 const terminal=new TerminalDialog();
 async function openCardInfo(id:string){try{await enqueue(save);await statistics.openCard(id);}catch(error){message((error as Error).message);}}
 async function openStatistics(folderId?:string){try{await enqueue(save);await statistics.openOverview(folderId);}catch(error){message((error as Error).message);}}
-interface Draft {
-  note:Material;
-  content:string;
-  answer:string;
-  savedContent:string;
-  savedAnswer:string;
-  documents:CardDocuments;
-  questionState?:any;
-  answerState?:any;
-}
 const drafts=new Map<string,Draft>();
 let current:Draft|null=null;
 let editors:{question:ReadingEditor;answer?:ReadingEditor}|null=null;
@@ -85,6 +88,39 @@ let studyOrigin:string|null=null;
 let answerShown=false;
 let studyBusy=false;
 let studyEditing=false;
+let editorMode:EditorMode='live';
+const editorModeButton=$<HTMLButtonElement>('editor-mode');
+const editorModes={
+  live:{label:'实时编辑',next:'source'},
+  source:{label:'源码模式',next:'reading'},
+  reading:{label:'浏览模式',next:'live'},
+} as const;
+function setEditorMode(mode:EditorMode){
+  editorMode=mode;
+  editorModeButton.textContent=t(editorModes[mode].label);
+  editors?.question.setMode(mode);
+  editors?.answer?.setMode(mode);
+  const menuItem=document.getElementById('menu-editor-mode');
+  if(menuItem)menuItem.textContent=t(editorModes[mode].label);
+}
+editorModeButton.onclick=()=>setEditorMode(editorModes[editorMode].next);
+
+// 2026-11-19：窗口太窄时，右下角这一排按钮会挤成一团——把它们（卡片标签 / 实时编辑 / 优先级）
+// 统一收进「更多」菜单，宽回来再放出去；图标与选项本身不变。
+function applyCompactStudyTools(){
+  const narrow=innerWidth<1200;
+  document.body.classList.toggle('compact-study-tools',narrow);
+  for(const id of ['menu-card-tags','menu-editor-mode','menu-priority'] as const){
+    const item=document.getElementById(id) as HTMLButtonElement|null;
+    if(item)item.hidden=!narrow;
+  }
+}
+window.addEventListener('resize',applyCompactStudyTools);
+applyCompactStudyTools();
+// 这些菜单项只在窄窗口出现；老 index.html 里可能没有，取不到就直接跳过（不能因此让界面起不来）
+$<HTMLButtonElement>('menu-card-tags')?.addEventListener('click',()=>{hideStudyMenu();$('card-tags').click();});
+$<HTMLButtonElement>('menu-editor-mode')?.addEventListener('click',()=>{hideStudyMenu();setEditorMode(editorModes[editorMode].next);});
+$<HTMLButtonElement>('menu-priority')?.addEventListener('click',()=>{hideStudyMenu();$('study-priority').click();});
 let directoryCollapsed=false;
 let browserOrigin:string|null=null;
 // 独立编辑窗口（?card=<id>）——只显示这一张卡，隐藏目录树/功能栏。
@@ -98,16 +134,38 @@ const soloBrowseStatus=new URLSearchParams(location.search).get('status')==='con
 const soloBrowseCard=new URLSearchParams(location.search).get('select');
 const soloWindow=soloBrowser||soloAdd;
 let directoryTypes:TreeType[]=[];
-let highlights={extract:true,cloze:true};
+let highlights={extract:true,cloze:true,topic:true};
 
-function cardPresentation(draft:Draft){
-  const reviewing=study?.mode==='cards'&&study.item?.id===draft.note.id&&draft.note.kind==='cloze';
-  const readOnly=reviewing&&!studyEditing,coverMask=reviewing&&!answerShown;
-  return {readOnly,coverMask,hideAnswer:coverMask||(readOnly&&!draft.answer.trim()&&hasImageMask(draft.content))};
+// 2026-11-20：判定逻辑搬到 ui/draft.ts（纯函数），这里只负责喂当前状态
+function presentationFor(draft:Draft){
+  return cardPresentation(draft,{
+    studyMode:study?study.mode:null,
+    studyItemId:study?.item?.id??null,
+    editing:studyEditing,
+    answerShown,
+    hasImageMask:hasImageMask(draft.content),
+  });
 }
 
 for(const [id,name] of Object.entries({'toggle-directory':'panel-right-close','toggle-review':'play','toggle-reading':'book-open','open-browser':'panels-top-left','open-add-card':'square-plus','open-shortcuts':'keyboard','open-settings':'settings',minimize:'minus',maximize:'maximize-2',close:'x'}))setIcon($(id),name as IconName);
 
+// 2026-11-17：所有功能键（button）都不接受焦点——Tab/Shift+Tab 不会停在按钮上，点击也不留焦点框
+for(const button of document.querySelectorAll<HTMLElement>('button,summary'))button.tabIndex=-1;
+document.addEventListener('focusin',event=>{
+  const target=event.target as HTMLElement|null;
+  if(target&&target.closest('button,summary'))target.blur();
+});
+document.addEventListener('mousedown',event=>{
+  const target=event.target as HTMLElement|null;
+  if(target&&target.closest('button,summary'))event.preventDefault();
+},true);
+new MutationObserver(records=>{
+  for(const record of records)for(const node of record.addedNodes){
+    if(!(node instanceof HTMLElement))continue;
+    const buttons=node.matches('button,summary')?[node as HTMLElement]:[...node.querySelectorAll<HTMLElement>('button,summary')];
+    for(const button of buttons)button.tabIndex=-1;
+  }
+}).observe(document.body,{childList:true,subtree:true});
 let noticeTimer:ReturnType<typeof setTimeout>|undefined;
 // 提示显示在工作区右上角，3.5 秒后自动消失（避免长期占位）
 function message(text:string):void{$('notice').textContent=text;$('notice').hidden=!text;
@@ -123,62 +181,74 @@ async function save():Promise<void>{
   clearTimeout(timer);
   const draft=current;
   if(!draft)return;
-  while(dirty(draft)){
+  let saved=false;
+  while(isDirty(draft)){
     const {content,answer,documents}=draft;
     const result=await request<{revision:number}>('save',{id:draft.note.id,revision:draft.note.revision,
       content:documents.content.text,answer:documents.answer.text,documents});
     draft.note.revision=result.revision;
     draft.note.content=content;draft.note.answer=answer;draft.note.documents=documents;
     draft.savedContent=content;draft.savedAnswer=answer;
+    saved=true;
   }
+  // 2026-11-19：正文改动后锚点区间已被搬移，重新取一次，别让编辑器还画着旧范围
+  if(saved)void refreshAnchors();
 }
-type UndoEntry={run:(applied:()=>void)=>Promise<void>;text?:{
-  id:string;section:'question'|'answer';before:string;after:string;typedAt:number;
-}};
-const undoHistory:UndoEntry[]=[];
-function recordUndo(entry:UndoEntry){
-  undoHistory.push(entry);
-  if(undoHistory.length>100)undoHistory.shift();
-}
+const undoStack=createUndoStack();
+const recordUndo=(entry:UndoEntry)=>undoStack.push(entry);
 function undoLatest(){
   void enqueue(async()=>{
-    const entry=undoHistory.at(-1);
+    const entry=undoStack.latest();
     if(!entry)return;
     const workspace=$('editor-stack');
     const focused=focusedEditor(),focusId=current?.note.id;
-    workspace.inert=true;
+    const currentEditors=entry.text?.id===focusId?editors:null;
+    if(currentEditors){
+      currentEditors.question.setUndoPending(true);
+      currentEditors.answer?.setUndoPending(true);
+    }else workspace.inert=true;
     try{
-      await entry.run(()=>{
-        const index=undoHistory.indexOf(entry);
-        if(index!==-1)undoHistory.splice(index,1);
-      });
+      await entry.run(()=>undoStack.remove(entry));
     }finally{
-      workspace.inert=false;
-      if(focused&&focusId===current?.note.id)editors?.[focused.section]?.view.focus();
+      if(currentEditors){
+        currentEditors.question.setUndoPending(false);
+        currentEditors.answer?.setUndoPending(false);
+      }else workspace.inert=false;
+      if(focused&&focusId===current?.note.id&&currentEditors!==editors)editors?.[focused.section]?.view.focus();
       renderStudyControls();
     }
   });
 }
 function changed(draft:Draft,section:'question'|'answer',value:string,typing:boolean,document:AttachmentDocument):void{
   const previous=section==='answer'?draft.answer:draft.content;
-  const now=Date.now(),last=undoHistory.at(-1)?.text;
-  if(typing&&last&&last.id===draft.note.id&&last.section===section&&
-    last.after===previous&&now-last.typedAt<500){
-    last.after=value;last.typedAt=now;
-  }else{
-    const text={id:draft.note.id,section,before:previous,after:value,typedAt:typing?now:0};
+  const now=Date.now();
+  if(undoStack.coalesceText({id:draft.note.id,section,previous,value,now}))return;
+  {
+    const beforeDocument=section==='answer'?draft.documents.answer:draft.documents.content;
+    const text={id:draft.note.id,section,before:previous,beforeDocument,after:value,typedAt:typing?now:0};
     recordUndo({text,run:async applied=>{
       await save();
       const note=await request<Material|null>('get',{id:text.id});
       const key=text.section==='answer'?'answer':'content';
       if(!note||note[key]!==text.after||browser.hasUnsavedEdit(note.id,note.content,note.answer))
         throw Error(t('正文已变化，无法撤销这次编辑。'));
-      await request('save',{id:note.id,revision:note.revision,content:note.content,answer:note.answer,[key]:text.before});
+      const documents={...(note.documents??{content:readLegacyDocument(note.content),answer:readLegacyDocument(note.answer)}),
+        [key]:text.beforeDocument};
+      const {revision}=await request<{revision:number}>('save',{id:note.id,revision:note.revision,
+        content:documents.content.text,answer:documents.answer.text,documents});
       applied();
-      drafts.delete(note.id);
-      if(current?.note.id===note.id){
-        emptyWorkspace('');
-        await open(note.id,undefined,true);
+      const editor=editors?.[text.section];
+      if(current?.note.id===note.id&&editor){
+        const content=key==='content'?text.before:note.content,answer=key==='answer'?text.before:note.answer;
+        current.note={...note,revision,content,answer,documents};
+        current.content=current.savedContent=content;
+        current.answer=current.savedAnswer=answer;
+        current.documents=documents;
+        editor.restoreDocument(text.beforeDocument);
+        applyStudyPresentation();
+      }else{
+        drafts.delete(note.id);
+        if(current?.note.id===note.id)await open(note.id,undefined,true,'preserve');
       }
       await browser.reloadEdit(note.id);
       if(browser.visible)void browser.refresh();
@@ -206,13 +276,10 @@ function pruneDrafts():void{
   }
 }
 // 界面导航历史（Ctrl+Alt+←/→ 在打开过的卡片之间前后跳）
-const navStack:string[]=[];let navIndex=-1;let navRestoring=false;
+const navHistory=createNavigationHistory(200);
 async function open(id:string,source?:Anchor,force=false,treeScroll:'center'|'preserve'|'selected'='center'):Promise<void>{
   await save();
-  if(!navRestoring&&current?.note.id!==id){
-    navStack.splice(navIndex+1);navStack.push(id);navIndex=navStack.length-1;
-    if(navStack.length>200){navStack.shift();navIndex=navStack.length-1;}
-  }
+  navHistory.record(id,current?.note.id);
   if(studyEditing&&study?.item?.id!==id)studyEditing=false;
   if(current?.note.id===id&&!force){
     if(treeScroll==='preserve')tree.selectNode(id);
@@ -227,6 +294,10 @@ async function open(id:string,source?:Anchor,force=false,treeScroll:'center'|'pr
     await save();
     const note=await window.reading.readEditorCard('workspace',id);
     if(note&&note.kind!=='folder')await mountEditor(note,source,treeScroll);
+  }catch(error){
+    // 2026-11-20：挂载中途抛错时，把还没提交的覆盖层清掉，别让工作区留一片空白 + 一张半成品卡片。
+    for(const child of [...workspace.children])if(child.classList.contains('workspace-stage')&&!child.classList.contains('is-committed'))child.remove();
+    throw error;
   }finally{
     workspace.inert=wasInert;
     window.reading.setEditorCard('workspace',current?.note.id??null);
@@ -246,24 +317,45 @@ async function mountEditor(note:Material,source:Anchor|undefined,treeScroll:'cen
     if(value)cardFlags.set(id,value);
     applyCardBadge();
   }).catch(()=>{});
-  const anchors=await request<Array<{id:string;anchor:Anchor}>>('anchors',{id});
-  highlights=await request('settingGet',{key:'highlights:'+id})||{extract:true,cloze:true};
-  // 检测卡的上下比例也要在清空工作区之前读好——否则清空后还要 await 一次，
-  // 浏览器会先画一帧空白工作区，表现就是切换卡片时闪一下。
-  const storedSplit=note.kind==='cloze'?(Number(await request('settingGet',{key:'cardSplit:'+note.id}))||50):50;
+  // 2026-11-19：锚点改成「不阻塞挂载」——先用缓存的锚点建编辑器，请求回来再补上（高亮/跳转会稍后出现）。
+  const anchorsPromise=request<Array<{id:string;anchor:Anchor}>>('anchors',{id}).catch(()=>[] as Array<{id:string;anchor:Anchor}>);
+  const cachedAnchors=anchorCache.get(id)??[];
+  const [storedHighlights,storedSplit]=await Promise.all([
+    request<{extract?:boolean;cloze?:boolean;topic?:boolean}|null>('settingGet',{key:'highlights:'+id}).catch(()=>null),
+    note.kind==='cloze'?request<number|null>('settingGet',{key:'cardSplit:'+note.id}).catch(()=>null):Promise.resolve(null),
+  ]);
+  const anchors=cachedAnchors.length?cachedAnchors.map(anchor=>({id,anchor})):[];
+  highlights={extract:storedHighlights?.extract??true,cloze:storedHighlights?.cloze??true,topic:storedHighlights?.topic??true};
+  const splitValue=Number(storedSplit)||50;
+  void anchorsPromise.then(list=>{
+    anchorCache.set(id,list.map(entry=>entry.anchor));
+    if(current?.note.id!==id)return;
+    const values=list.map(entry=>entry.anchor);
+    editors?.question.setAnchors(values);
+    editors?.answer?.setAnchors(values);
+  });
   disposeEditors();
   current=draft;
   drafts.delete(id);drafts.set(id,draft);pruneDrafts();
-  const workspace=$('workspace');workspace.replaceChildren();
-  const presentation=cardPresentation(draft);
+  const workspace=$('workspace');
+  // 2026-11-19：先在一个覆盖层里把新编辑器建好，再一次性替换——否则切卡（读完/稍后/1-4 等）
+  // 会先清空工作区再重绘，看起来就是闪一帧。
+  const stage=document.createElement('div');
+  stage.className='workspace-stage';
+  workspace.append(stage);
+  const commitStage=()=>{
+    for(const child of [...workspace.children])if(child!==stage)child.remove();
+    stage.classList.add('is-committed');
+  };
+  const presentation=presentationFor(draft);
   const make=(host:HTMLElement,section:'question'|'answer')=>new ReadingEditor(host,{
     value:section==='answer'?draft.answer:draft.content,
     document:section==='answer'?draft.documents.answer:draft.documents.content,
-    label:note.kind==='cloze'?(section==='answer'?t('答案'):t('检测内容')):t('笔记正文'),
+    label:note.kind==='cloze'?(section==='answer'?t('答案区'):t('编辑区')):t('笔记正文'),
     section,anchors:anchors.map(entry=>entry.anchor),highlights,textOnlyCursor:note.kind==='cloze',
     // 复习（cards）里检测卡默认只读，点「编辑」解锁；待办（reading）里默认可直接编辑，
     // 因为阅读材料时经常要顺手改字/补内容，不必先点编辑。
-    readOnly:presentation.readOnly,
+    readOnly:presentation.readOnly,mode:editorMode,
     audioAutoplay:!!configuration.settings.audioAutoplay,
     snapshot:section==='answer'?draft.answerState:draft.questionState,
     onChange:(value,typing,document)=>changed(draft,section,value,typing,document),
@@ -280,10 +372,10 @@ async function mountEditor(note:Material,source:Anchor|undefined,treeScroll:'cen
     // 不再等 applyStudyPresentation() 事后补类（那样中间的 await 会让浏览器先画一帧答案，造成闪烁）。
     const previewHidden=presentation.hideAnswer;
     // 先把保存的比例读出来，再建 DOM——否则卡片先按 50/50 画一帧、再被改成保存值，会看到分隔条/文字跳一下
-    const storedRatio=storedSplit;
+    const storedRatio=splitValue;
     const card=document.createElement('div');card.className='test-card';
     card.classList.toggle('answer-collapsed',previewHidden);
-    card.classList.toggle('is-mask-covered',presentation.coverMask);workspace.append(card);
+    card.classList.toggle('is-mask-covered',presentation.coverMask);stage.append(card);
     // 所有检测卡默认上下 5:5（以前是 65:35）；用户拖动过的卡仍按各自保存值
     let ratio=storedRatio;
     const applySplit=()=>{
@@ -322,13 +414,16 @@ async function mountEditor(note:Material,source:Anchor|undefined,treeScroll:'cen
     const answer=pane('answer');
     editors={question,answer};
   }else{
-    const host=document.createElement('div');host.className='material-editor';workspace.append(host);
+    const host=document.createElement('div');host.className='material-editor';stage.append(host);
     if(draft.answer.trim()){
       host.classList.add('has-extra-answer');const q=document.createElement('div'),a=document.createElement('div'),rule=document.createElement('hr');rule.className='material-extra-rule';a.className='material-extra-answer';host.append(q,rule,a);editors={question:make(q,'question'),answer:make(a,'answer')};
     }else editors={question:make(host,'question')};
   }
+  // 新编辑器已经建好，这一下才替换旧内容（同一帧内完成，中间不会露出空白工作区）
+  commitStage();
   await breadcrumbs(note);
-  await refreshRelations();
+  // 2026-11-19：关系面板不阻塞切卡（它只是右侧/记忆树的展示数据）
+  void refreshRelations();
   if(treeScroll==='preserve')tree.selectNode(id);
   else if(treeScroll==='center')await tree.reveal(id);
   browser.markActive(note.id,note.folderId);
@@ -362,7 +457,7 @@ async function breadcrumbs(note:Material):Promise<void>{
     }
   }
 }
-// 卡片属性（标签）——底部状态栏右侧，可添加/移除，浏览卡片里能按属性检索
+// 卡片标签（标签）——底部状态栏右侧，可添加/移除，浏览卡片里能按属性检索
 const tagsPanel=$('card-tags-panel'),tagsList=$('card-tags-list'),tagsInput=$<HTMLInputElement>('card-tags-input');
 async function renderCardTags():Promise<void>{
   const id=current?.note.id;tagsList.replaceChildren();
@@ -373,7 +468,10 @@ async function renderCardTags():Promise<void>{
   for(const tag of tags){
     const chip=document.createElement('span');chip.className='card-tag';
     // 内部标签显示中文（leech 保持原样），点 × 删的仍是原来的标签值
-    chip.textContent=tag==='leech'&&leechCount?tag+'('+leechCount+')':tagLabel(tag);chip.title=tag;
+    // 2026-11-19：搁置按状态分叫法——记忆搁置 / 待办搁置 / 两者都有
+    const flags=cardFlags.get(id);
+    const buriedLabel=flags?.buriedReview&&flags?.buriedTodo?t('已搁置（记忆 / 待办）'):flags?.buriedReview?t('记忆搁置'):flags?.buriedTodo?t('待办搁置'):null;
+    chip.textContent=tag==='leech'&&leechCount?tag+'('+leechCount+')':tag==='buried'&&buriedLabel?buriedLabel:tagLabel(tag);chip.title=tag;
     const remove=document.createElement('button');remove.type='button';remove.textContent='×';remove.title=t('移除属性');
     remove.onclick=()=>void enqueue(async()=>{await request('removeCardTag',{id,tag});await renderCardTags();});
     chip.append(remove);tagsList.append(chip);
@@ -403,33 +501,56 @@ async function refreshAnchors():Promise<void>{
   const list=await request<Array<{id:string;anchor:Anchor}>>('anchors',{id});
   if(current?.note.id!==id||!editors)return;
   const anchors=list.map(entry=>entry.anchor);
+  anchorCache.set(id,anchors);
   editors.question.setAnchors(anchors);
   editors.answer?.setAnchors(anchors);
 }
-async function createExcerpt(draft:Draft,section:'question'|'answer',kind:'extract'|'cloze'|'blank',from:number,to:number):Promise<void>{
-  const source=section==='answer'?draft.answer:draft.content;
-  if(kind!=='blank'&&(from===to||!source.slice(from,to).trim()))return;
+// 2026-11-19：Alt+A / Alt+S 的落点与内容规则——
+//   落点看「目录树聚焦项」，新卡是它的子级（聚焦检测卡就生成子检测卡）；没有聚焦就落默认文件夹；
+//   有选区才带正文与回原文的锚点，没选区就生成空的提取 / 检测卡（未命名）。
+async function createExcerpt(draft:Draft|null,section:'question'|'answer',kind:'extract'|'cloze',from:number,to:number):Promise<void>{
+  const source=draft?(section==='answer'?draft.answer:draft.content):'';
+  const selected=to>from?source.slice(from,to):'';
+  const hasSelection=!!selected.trim();
   void enqueue(async()=>{
-    if(current!==draft)return;
-    await save();
-    if((section==='answer'?draft.answer:draft.content)!==source)return;
-    // Alt+S（选区生成检测卡）不再把新卡正文挖成 [...…]，而是整段原文照抄过去，
-    // 选中的文字放进答案区；来源锚点仍保留，方便跳回原文。
-    const selected=source.slice(from,to);
-    const result=await request<{node:Material;undoable:boolean}>('create',{
-      parentId:draft.note.id,kind:kind==='cloze'?'cloze':'material',from:kind==='blank'?undefined:from,
-      to:kind==='blank'?undefined:to,section,revision:draft.note.revision,
-      ...(kind==='cloze'?{content:source,answer:selected}:{}),
-    });
+    if(draft&&current!==draft)return;
+    if(draft)await save();
+    if(draft&&(section==='answer'?draft.answer:draft.content)!==source)return;
+    const focus=tree.selectedNode();
+    // 2026-11-19：有选区时，选区所在的那张卡就是父级（即使目录树聚焦被点空白清掉）；
+    // 没有选区才看聚焦项，聚焦也没有就落默认文件夹。
+    const parentId=await safeParentId(focus?.id??(hasSelection&&draft?draft.note.id:null));
+    const payload:any={parentId,kind:kind==='cloze'?'cloze':'material'};
+    if(hasSelection){
+      if(draft&&parentId===draft.note.id){
+        // 常规：父级就是选区来源，带锚点，能跳回原文
+        Object.assign(payload,{from,to,section,revision:draft.note.revision});
+        if(kind==='cloze')Object.assign(payload,{content:source,answer:selected});
+      }else{
+        // 父级不是选区来源（或没有来源卡）：只带正文，不带锚点
+        if(kind==='cloze')Object.assign(payload,{content:source.slice(0,from)+'[...]'+source.slice(to),answer:selected});
+        else payload.content=selected;
+      }
+    }
+    const result=await request<{node:Material;undoable:boolean}>('create',payload);
     recordCreation(result.node);
-    await tree.refresh([draft.note.id]);
+    await tree.refresh([parentId,focus?.parentId??null],parentId);
+    await refreshRelations();
     await refreshCounts();
-    // Alt+A / Alt+S / Alt+D 建完不再跳到新卡——接着读手头这张，只在原文上补锚点、
-    // 目录里多出一行。需要改新卡时，选中它右键或用「在目录树中定位」。
-    message(kind==='blank'?t('已新建提取。'):kind==='cloze'?t('已生成检测卡。'):t('已摘录为提取。'));
-    await refreshAnchors();
+    // 建完不跳走，接着读手头这张；需要改新卡时在目录树里选中它。
+    message(kind==='cloze'?t('已生成检测卡。'):t('已摘录为提取。'));
+    if(draft)await refreshAnchors();
     // 新建的提取/检测卡不再立刻进入重命名——标题跟随工作区正文自动生成，需要改名时右键或选中后 F12
   });
+}
+/** 2026-11-19：目录树可能残留一个已被删除的选中项（行没了但选中还记着），
+ *  这时退回默认文件夹，避免 create 直接报「父级已删除」。 */
+async function safeParentId(id:string|null|undefined):Promise<string>{
+  if(id){
+    const node=await request<TreeNode|null>('get',{id});
+    if(node)return id;
+  }
+  return 'folder:unfiled';
 }
 const prompt=$<HTMLDialogElement>('prompt');
 async function ask(heading:string,initial:string,description?:string):Promise<string|null>{
@@ -451,16 +572,26 @@ async function ask(heading:string,initial:string,description?:string):Promise<st
   },{once:true}));
 }
 const untitledCard={topic:t('未命名主题'),material:t('未命名提取'),cloze:t('未命名检测卡')};
-async function newNode(kind:'folder'|'topic'|'material'|'cloze',parentId:string|null):Promise<void>{
+async function newNode(kind:'folder'|'topic'|'material'|'cloze',parentId:string|null,content?:string,
+  anchor?:{from:number;to:number;section:'question'|'answer';revision:number},{jump}:{jump?:boolean}={}):Promise<void>{
   const title=kind==='folder'?await ask(t('新建文件夹'),''):untitledCard[kind];
   if(!title)return;
   if(kind!=='folder'&&browser.visible)await browser.close();
   await enqueue(async()=>{
     await save();
-    const {node}=await request<{node:Material}>('create',{parentId,kind,title});
+    // 2026-11-19：父级可能已被删掉（目录树残留选中），退回默认文件夹而不是报「父级已删除」
+    const target=await safeParentId(parentId);
+    // 父级被换成默认文件夹时锚点就不成立（来源不是默认文件夹），只保留正文
+    const useAnchor=anchor&&target===parentId;
+    const {node}=await request<{node:Material}>('create',{parentId:target,kind,title,content,...(useAnchor?anchor:{})});
     recordCreation(node);
-    await tree.refresh([parentId]);
-    if(kind==='folder'){activeFolderId=node.id;await tree.reveal(node.id);}else await open(node.id);
+    await tree.refresh([target],parentId&&parentId!=='folder:unfiled'?parentId:undefined);
+    // 2026-11-20：新建主题不跳走（与 Alt+A/Alt+S 新建的提取/检测卡一致）——只有「没选区、也没聚焦项，
+    // 于是落到默认文件夹」时才打开这张空主题，方便直接开始写。其余情况留在当前卡片继续读。
+    const shouldJump=kind==='folder'?false:kind==='topic'?!!jump:true;
+    if(kind==='folder'){activeFolderId=node.id;await tree.reveal(node.id);}
+    else if(shouldJump)await open(node.id);
+    else if(anchor)await refreshAnchors();
     await refreshCounts();applyStudyPresentation();
     // 同上，新建主题/提取/检测卡不弹重命名；文件夹仍需命名
   });
@@ -552,12 +683,13 @@ async function refreshMovedNode(id:string,previous:string|null,parentId:string|n
     const live=await request<Material|null>('get',{id:current.note.id});
     if(live){current.note=live;activeFolderId=live.folderId;await breadcrumbs(live);}
   }
+  await refreshRelations();
   await refreshCounts();
 }
 
-async function moveGroup(ids:string[],parentId:string|null,peerId?:string,includeFolders=false):Promise<void>{
+async function moveGroup(ids:string[],parentId:string|null,peerId?:string,includeFolders=false,allowCardParent=false):Promise<void>{
   await save();
-  const previous=await request<Array<{id:string;parentId:string|null}>>('moveCards',{ids,parentId,peerId,includeFolders});
+  const previous=await request<Array<{id:string;parentId:string|null}>>('moveCards',{ids,parentId,peerId,includeFolders,allowCardParent});
   if(!previous.length)return;
   const [first,...others]=previous;
   const refresh=async()=>{
@@ -574,41 +706,55 @@ async function moveGroup(ids:string[],parentId:string|null,peerId?:string,includ
   await refresh();
 }
 
-async function remove(node:TreeNode):Promise<void>{
+async function remove(node:TreeNode,mode:'single'|'branch'='branch'):Promise<void>{
   // 删文件夹＝文件夹和里面所有内容一起进垃圾桶，恢复时整棵子树一起回来。
   // 确认框可在「设置 → 删除」里关掉（默认关＝直接删，仍可用 Ctrl+Z 撤销或到垃圾桶恢复）
   if(configuration.settings.confirmDelete){
-    const confirmed=await ask(node.kind==='folder'?t('删除文件夹'):t('删除卡片'),'',
-      t('删除「{0}」？{1}可撤销（Ctrl+Z）或到垃圾桶恢复。',node.title,node.hasChildren?t('里面的内容会一起进垃圾桶，恢复时整棵子树一起回来。'):''));
+    const confirmed=await ask(node.kind==='folder'?t('删除文件夹'):t(mode==='single'?'仅删除此卡':'删除全部卡片'),'',
+      t('删除「{0}」？{1}可撤销（Ctrl+Z）或到垃圾桶恢复。',node.title,node.hasChildren?(mode==='single'?t('子级卡片会保留并移到上一级。'):t('里面的内容会一起进垃圾桶，恢复时整棵子树一起回来。')):''));
     if(!confirmed)return;
   }
   await enqueue(async()=>{
     await save();
     const wasCurrent=current?.note.id===node.id;
-    const result=await request<{destinationId:string|null}>('remove',{id:node.id});drafts.delete(node.id);
+    const result=await request<{destinationId:string|null}>('remove',{id:node.id,mode});drafts.delete(node.id);
     recordUndo({run:async applied=>{
       await save();
       const restored=await request<{parentId:string|null;title:string}>('trashRestore',{id:node.id});
       applied();
-      await tree.refresh([null,restored.parentId,result.destinationId]);
+      await refreshAnchors();
+      await tree.refresh([null,restored.parentId,result.destinationId,node.id]);
       await tree.reveal(node.id);
-      if(study){study=await request<StudySnapshot>('reviewRefresh');await presentStudy();}
-      else if(wasCurrent&&!current)await open(node.id,undefined,false,'preserve');
+      // 2026-11-17：撤销删除后回到被删的那张卡，而不是队列里的下一张
+      if(study){
+        study=await request<StudySnapshot>('reviewFocus',{id:node.id}).catch(()=>null)??await request<StudySnapshot>('reviewRefresh');
+        await presentStudy();
+        // 会话没能切回这张卡（队列已空/会话已结束）时，至少把工作区打开到它
+        if(study?.item?.id!==node.id)await open(node.id,undefined,true);
+        // 画面切回被删的卡片后，目录树重新定位并选中它
+        await tree.reveal(node.id);
+      }
+      else if(!current&&node.kind!=='folder')await open(node.id,undefined,false,'preserve');
       await refreshRelations();
       await refreshCounts();
       if(browser.visible)void browser.refresh();
       message(t('已撤销删除：「{0}」',restored.title));
     }});
-    if(wasCurrent){
-      emptyWorkspace(t('从目录树中选择材料。'));
+    // 2026-11-17：复习/待办里删卡时不要先清空或重画工作区——那会闪一下（看着像跳到别的卡片），
+    // 交给下面的 reviewRefresh + presentStudy 一次性换成下一张。
+    if(!study&&wasCurrent){
+      emptyWorkspace(t('从目录树中选择卡片。'));
     }
+    await refreshAnchors();
     await tree.refresh([null,node.parentId,result.destinationId]);
-    if(current){
-      const live=await request<Material|null>('get',{id:current.note.id});
-      if(live){current.note=live;activeFolderId=live.folderId;await breadcrumbs(live);}
-      else{activeFolderId=null;emptyWorkspace(t('从目录树中选择材料。'));}
+    if(!study){
+      if(current){
+        const live=await request<Material|null>('get',{id:current.note.id});
+        if(live){current.note=live;activeFolderId=live.folderId;await breadcrumbs(live);}
+        else{activeFolderId=null;emptyWorkspace(t('从目录树中选择卡片。'));}
+      }
+      else if(activeFolderId===node.id)activeFolderId=null;
     }
-    else if(activeFolderId===node.id)activeFolderId=null;
     await refreshCounts();
     if(study){study=await request<StudySnapshot>('reviewRefresh');await presentStudy();}
     await refreshRelations();
@@ -620,6 +766,61 @@ async function showMovePicker(node:TreeNode):Promise<void>{
   const selected=tree.selectedForMove(node);
   return chooseMoveFolder(parentId=>selected.length>1?moveGroup(selected.map(item=>item.id),parentId,undefined,true):moveNode(node,parentId));
 }
+// 批量删除：多选后一次删掉，撤销时整批恢复
+async function removeMany(nodes:TreeNode[]):Promise<void>{
+  const targets=nodes.filter(node=>node.id);
+  if(!targets.length)return;
+  if(configuration.settings.confirmDelete){
+    const confirmed=await ask(t('删除全部卡片'),'',t('删除选中的 {0} 项？可撤销（Ctrl+Z）或到垃圾桶恢复。',targets.length));
+    if(!confirmed)return;
+  }
+  await enqueue(async()=>{
+    await save();
+    const ids=targets.map(node=>node.id);
+    const parents=new Set<string|null>([null]);
+    for(const node of targets)parents.add(node.parentId);
+    for(const node of targets){
+      const result=await request<{destinationId:string|null}>('remove',{id:node.id,mode:'branch'});
+      parents.add(result.destinationId);
+      drafts.delete(node.id);
+    }
+    recordUndo({run:async applied=>{
+      await save();
+      for(const id of ids)await request<{parentId:string|null;title:string} | null>('trashRestore',{id}).catch(()=>null);
+      applied();
+      await refreshAnchors();
+      await tree.refresh([...parents]);
+      await refreshRelations();
+      await refreshCounts();
+      if(browser.visible)void browser.refresh();
+      message(t('已撤销删除：{0} 项',ids.length));
+    }});
+    const currentGone=!!current&&ids.includes(current.note.id);
+    if(!study&&currentGone)emptyWorkspace(t('从目录树中选择卡片。'));
+    await refreshAnchors();
+    await tree.refresh([...parents]);
+    await refreshCounts();
+    await refreshRelations();
+    if(browser.visible)void browser.refresh();
+    message(t('已删除 {0} 项，可用 Ctrl+Z 撤销。',ids.length));
+  });
+}
+/** 多选右键：只给批量操作 */
+function showSelectionMenu(nodes:TreeNode[],event:MouseEvent):void{
+  const menu=$('context-menu');menu.replaceChildren();
+  const item=(label:string,run:()=>void,danger=false)=>{
+    const button=document.createElement('button');button.type='button';button.dataset.action=label;
+    button.setAttribute('role','menuitem');button.textContent=t(label);
+    if(danger)button.className='danger';
+    button.onclick=()=>{menu.hidden=true;run();};menu.append(button);return button;
+  };
+  const title=document.createElement('div');title.className='context-menu-title';
+  title.textContent=t('已选 {0} 项',nodes.length);menu.append(title);
+  item('移至…',()=>void showMovePicker(nodes[0]!));
+  item('删除所有卡片',()=>void removeMany(nodes),true);
+  if(arrangeContextMenu(menu,'selection'))positionContextMenu(menu,event);else menu.hidden=true;
+}
+
 async function chooseMoveFolder(move:(parentId:string)=>Promise<void>):Promise<void>{
   document.getElementById('move-picker')?.remove();
   // folders() 只给 {id,title,parentId}，这里在渲染层拼出完整路径
@@ -692,12 +893,15 @@ async function chooseMoveFolder(move:(parentId:string)=>Promise<void>):Promise<v
   render('');input.focus();
 }
 
-/** Alt+F —— 在「文件管理」配置的默认文件夹里新建主题（没配置就用当前选中的文件夹）。 */
-async function newTopicInDefault():Promise<void>{
+/** §13.3：Alt+D（blank 分支）无聚焦无选区时的落点：在「文件管理」配置的默认文件夹里新建主题（无配置则落「默认」），并打开便于直接写。 */
+async function createTopicInDefaultFolder(content?:string):Promise<void>{
   let parentId:string|null=null;
   try{const saved=await request<{folderId?:string}|null>('settingGet',{key:'defaultTopicFolder'});parentId=saved?.folderId||null;}catch{}
-  if(!parentId)parentId=activeFolderId||current?.note.folderId||null;
-  await newNode('topic',parentId);
+  if(parentId){
+    const folder=await request<TreeNode|null>('get',{id:parentId});
+    if(folder?.kind!=='folder')parentId=null;
+  }
+  await newNode('topic',parentId??'folder:unfiled',content,undefined,{jump:!content?.trim()});
 }
 
 function showEditorInsertMenu(event:MouseEvent,attachment:()=>void,fileLink:()=>void):void{
@@ -804,23 +1008,30 @@ async function createMemoryChild(id:string,kind:'topic'|'material'|'cloze',
   });
 }
 function memoryActions(id:string,kind:'topic'|'material'|'cloze'){
-  const label=kind==='cloze'?'新建检测子卡片':kind==='topic'?'新建主题子卡片':'新建提取子卡片';
-  return [
-    [label,()=>void createMemoryChild(id,kind)],
+  const items:Array<readonly [string,()=>void]>=[
+    ['关联检测子卡片',()=>relationsPanel.openPicker(id,'memory')],
+    ['新建检测子卡片(空)',()=>void createMemoryChild(id,'cloze')],
+    ['新建提取子卡片(空)',()=>void createMemoryChild(id,'material')],
     ['关联卡片…',()=>relationsPanel.openPicker(id)],
-  ] as const;
+  ];
+  if(kind==='topic')items.unshift(['新建主题子卡片',()=>void createMemoryChild(id,'topic')]);
+  return items;
 }
 function relationContext(targetId:string,kind:TreeNode['kind'],relation:CardRelationKey|null,event:MouseEvent):void{
   const menu=$('context-menu');menu.replaceChildren();
   const items:Array<readonly [string,()=>void]>=[
-    ['打开',()=>void enqueue(()=>open(targetId))],
+    ['打开',()=>openMemoryCard(targetId)],
     ['在目录树中定位',()=>void enqueue(()=>tree.reveal(targetId))],
     ['卡片信息',()=>void openCardInfo(targetId)],
   ];
   if(kind!=='folder')items.push(...memoryActions(targetId,kind));
-  if(relation)items.push(['解除关系',()=>void enqueue(async()=>{
+  if(relation)items.push(['移除关联',()=>void enqueue(async()=>{
     await request('removeCardRelation',{id:targetId,relation});
-    await refreshRelations();
+    await refreshAfterLink(relation.kind);
+  })]);
+  if(kind!=='folder')items.push(['移除所有关联',()=>void enqueue(async()=>{
+    await request('removeAllCardRelations',{id:targetId});
+    await refreshAfterLink('memory');
   })]);
   for(const [label,action] of items){
     const item=document.createElement('button');item.type='button';item.textContent=t(label);item.dataset.action=label;
@@ -830,12 +1041,28 @@ function relationContext(targetId:string,kind:TreeNode['kind'],relation:CardRela
   }
   if(arrangeContextMenu(menu,'relation'))positionContextMenu(menu, event);else menu.hidden=true;
 }
+function openMemoryCard(id:string){
+  void enqueue(async()=>{await save();await request('cardWindow',{id});});
+}
+async function refreshAfterLink(kind:'memory'|'related'){
+  if(kind==='memory'&&study){
+    const before=study.item?.id;study=await request<StudySnapshot>('reviewRefresh');
+    if(before!==study.item?.id)await presentStudy();else await refreshCounts();
+  }
+  await refreshRelations();
+}
+function linkCards(ids:string[],target:string,kind:'memory'|'related'){
+  void enqueue(async()=>{
+    try{
+      for(const id of ids)if(id!==target)await request(kind==='memory'?'addMemoryChild':'addRelatedCard',{id:target,targetId:id});
+    }finally{await refreshAfterLink(kind);}
+  });
+}
 const relationsPanel=new CardRelationsPanel($('card-relations'),$('relation-picker'),{
-  add:(id,targetId)=>void enqueue(async()=>{
-    await request('addRelatedCard',{id,targetId});
-    await refreshRelations();
-  }),
-  open:id=>void enqueue(()=>open(id)),
+  add:(id,targetId,kind)=>linkCards([targetId],id,kind),
+  dragged:()=>tree.draggedCards().map(node=>node.id),
+  link:linkCards,
+  open:openMemoryCard,
   context:relationContext,
   error:message,
 });
@@ -843,6 +1070,11 @@ function refreshRelations():Promise<void>{
   return relationsPanel.show(!soloCard&&current!==null&&current.note.kind!=='folder'?current.note.id:null);
 }
 function context(node:TreeNode|null,event:MouseEvent,inBrowser=false,extra:Array<[string,()=>void]> = []):void{
+  // 2026-11-19：目录树多选（Shift/Ctrl）时右键走批量菜单，不再是单卡菜单
+  if(node&&!inBrowser){
+    const selected=tree.selectedForMove(node);
+    if(selected.length>1&&selected.some(item=>item.id===node.id)){showSelectionMenu(selected,event);return;}
+  }
   const menu=$('context-menu');menu.replaceChildren();
   const item=(text:string,action:()=>void,danger=false,id=text)=>{
     const button=document.createElement('button');button.textContent=t(text);button.dataset.action=id;button.className=danger?'danger':'';
@@ -867,14 +1099,16 @@ function context(node:TreeNode|null,event:MouseEvent,inBrowser=false,extra:Array
       activeFolderId=node.id;
       item('进入复习',()=>void enqueue(()=>startStudy('cards',node.id)));
       item('新建子文件夹',()=>void newNode('folder',node.id));
-      item('新建主题',()=>void newNode('topic',node.id));
+      // §13.4：右键新建主题要跳（快捷键 Alt+D 有聚焦时才不跳）
+      item('新建主题',()=>void newNode('topic',node.id,undefined,undefined,{jump:true}));
       item('新建提取',()=>void newNode('material',node.id));
       item('新建检测卡',()=>void newNode('cloze',node.id));
       item('牌组统计',()=>void openStatistics(node.id));
       item('设置',()=>void openDeckSettings(node.id));
     }else{
       const createChild=(kind:'topic'|'material'|'cloze')=>inBrowser
-        ? newNode(kind,node.id)
+        // §13.4：右键的同类新建主题同样要跳（浏览窗口里这条路也走 newNode）
+        ? newNode(kind,node.id,undefined,undefined,kind==='topic'?{jump:true}:{})
         : createMemoryChild(node.id,kind,untitledCard[kind]);
       if(node.kind==='topic')item('新建子主题',()=>void createChild('topic'));
       item('新建提取',()=>void createChild('material'));
@@ -948,7 +1182,11 @@ function context(node:TreeNode|null,event:MouseEvent,inBrowser=false,extra:Array
     // 场景相关的额外项（浏览卡片里的「冲突文件…」等）
     for(const [label,action] of extra)item(label,action);
     menu.append(document.createElement('hr'));
-    item(node.kind==='folder'?'删除文件夹':'删除卡片',()=>void remove(node),true);
+    if(node.kind==='folder')item('删除文件夹',()=>void remove(node),true);
+    else{
+      item('仅删除此卡',()=>void remove(node,'single'),true);
+      item('删除全部卡片',()=>void remove(node),true);
+    }
   }
   if(arrangeContextMenu(menu,inBrowser?'browser':node?.kind??'blank'))positionContextMenu(menu, event);else menu.hidden=true;
 }
@@ -961,6 +1199,7 @@ function browserTrashContext(row:{id:string;kind:NodeKind;deletedAt:string|null}
   item('恢复卡片',()=>void enqueue(async()=>{
     await save();
     await request('trashRestore',{id:row.id});
+    await refreshAnchors();
     await tree.refresh([null]);
     await refreshCounts();
     if(browser.visible)void browser.refresh();
@@ -978,7 +1217,9 @@ const tree=new DirectoryTree($('tree'),{
     }else await open(node.id,undefined,false,'selected');
   }),
   context,rename:node=>void rename(node),
-  move:(nodes,parentId,peerId)=>void enqueue(()=>moveGroup(nodes.map(node=>node.id),parentId,peerId,true)),
+  move:(nodes,parentId,peerId,allowCardParent)=>void enqueue(()=>moveGroup(nodes.map(node=>node.id),parentId,peerId,true,allowCardParent)),
+  canRelate:nodes=>!!current&&nodes.some(node=>node.id!==current?.note.id),
+  relate:nodes=>{if(current)linkCards(nodes.map(node=>node.id),current.note.id,'related');},
   deselect:()=>{activeFolderId=null;},
 },directoryToggle);
 directoryToggle.onclick=event=>{
@@ -995,6 +1236,12 @@ directoryToggle.onclick=event=>{
 directoryPane.addEventListener('toggle',()=>updateTreeToggle(directoryToggle,directoryPane.open&&tree.hasExpandedBranches()));
 for(const button of document.querySelectorAll<HTMLElement>('.tree-sort-button'))setIcon(button,'list-ordered');
 bindTreeSort($('directory-sort'),'ir.directoryTree.sort',sort=>tree.setSort(sort));
+// 2026-11-17：两棵树表头的搜索。按标题检索卡片，选中后打开并定位到目录树。
+for(const button of document.querySelectorAll<HTMLElement>('.tree-search-button'))setIcon(button,'search');
+const searchTreeCards=(query:string)=>request<TreeNode[]>('search',{query});
+const openTreeSearchResult=(id:string)=>void enqueue(()=>open(id));
+bindTreeSearch($('directory-search'),searchTreeCards,openTreeSearchResult);
+bindTreeSearch($('memory-search'),searchTreeCards,openTreeSearchResult);
 
 const treeDivider=$('tree-divider'),directoryPanel=$('directory-pane');
 let treeSplit=62;
@@ -1081,19 +1328,25 @@ document.addEventListener('keydown',event=>{
   if(event.isComposing)return;
   if(event.key==='Escape'){$('context-menu').hidden=true;hideStudyMenu();closeAgainMenu();}
   if(document.querySelector('dialog[open]'))return;
+  if(event.target===editorModeButton&&(event.key==='Enter'||event.code==='Space'))return;
   const key=shortcutFromEvent(event),matching=COMMANDS.filter(command=>configuration.shortcuts[command.id]===key&&key);
   const isActual=study?.item?.id===current?.note.id;
   const editable=(event.target as Element)?.closest('input,textarea,[contenteditable="true"]');
   const command=matching.find(candidate=>{
+    // 2026-11-19：待办里要先 Alt+E 进入编辑，摘录/检测卡/新建主题才生效；其余情况照旧
+    if(candidate.id==='extract'||candidate.id==='cloze'||candidate.id==='blank'){
+      if(study?.mode==='reading'&&study.item&&study.item.id===current?.note.id&&!studyEditing)return false;
+      return true;
+    }
     if(candidate.scope==='editor')return !!focusedEditor();
     // 编辑键（默认 E）在编辑态也要可用，否则按进去就出不来了；其余 card 快捷键仍禁止
     if(candidate.scope==='card'){
       if(candidate.id==='editCard')return !!study&&isActual&&(study.item?.kind==='fsrs'||study.item?.kind==='reading');
       return !!study&&isActual&&study.item?.kind==='fsrs'&&!studyEditing;
     }
-    if(candidate.scope==='reading')return !!study&&isActual&&study.item?.kind==='reading'&&(!editable||key.includes('+'));
+    if(candidate.scope==='reading')return !!study&&isActual&&study.item?.kind==='reading'&&((( !editable&&!studyEditing))||key.includes('+'));
     // 搁置只在复习/待办中（非编辑态）触发
-    if(candidate.id==='buryCard')return !!study&&isActual&&!studyEditing&&!editable;
+    if(candidate.id==='buryCard')return !!study&&isActual&&!studyEditing&&!editable&&!event.repeat;
     if(candidate.id==='deleteCurrentCard')return !!current&&!soloWindow&&!browser.visible
       &&!(event.target as Element)?.closest('input,textarea,select');
     if(candidate.id==='undoReview')return false;
@@ -1102,11 +1355,13 @@ document.addEventListener('keydown',event=>{
   if(!command)return;
   event.preventDefault();event.stopImmediatePropagation();
   const action=command.id;
-  if(action==='extract'||action==='cloze'||action==='blank'){
-    const focused=focusedEditor();if(!focused||!current)return;
-    const {from,to}=focused.editor.view.state.selection.main;
-    void createExcerpt(current,focused.section,action==='extract'?'extract':action==='cloze'?'cloze':'blank',
-      focused.editor.sourcePosition(from),focused.editor.sourcePosition(to));
+  if(action==='extract'||action==='cloze'){
+    const focused=focusedEditor();
+    // 2026-11-19：没有打开的卡片时也允许生成空卡（落点看聚焦项 / 默认文件夹）。
+    if(!current){void createExcerpt(null,'question',action,0,0);return;}
+    const from=focused?focused.editor.sourcePosition(focused.editor.view.state.selection.main.from):0;
+    const to=focused?focused.editor.sourcePosition(focused.editor.view.state.selection.main.to):0;
+    void createExcerpt(current,focused?focused.section:'question',action,from,to);
   }else if(action==='toggleReview')void enqueue(toggleStudy);
   else if(action==='toggleReading')void enqueue(()=>toggleStudy('reading'));
   else if(action==='toggleDirectory')toggleDirectory();
@@ -1118,7 +1373,23 @@ document.addEventListener('keydown',event=>{
   else if(action==='readLater')gradeStudy({action:'later'});
   else if(action==='readSoon')gradeStudy({action:'soon'});
   else if(action==='readDismiss')gradeStudy({action:'dismiss'});
-  else if(action==='newTopicDefault')void newTopicInDefault();
+  else if(action==='enrollCard'&&study?.item)enrollCard(study.item.id);
+  else if(action==='blank'&&!event.repeat){
+    const parent=tree.selectedNode();
+    const focused=focusedEditor();
+    const content=focused?.editor.selectedText();
+    // 2026-11-19：新建主题也带锚点（黄色高亮）——前提是焦点就在这张卡上、选区非空
+    const selection=focused?.editor.view.state.selection.main;
+    const anchored=!!focused&&!!parent&&!!current&&parent.id===current.note.id&&!!selection&&selection.from!==selection.to;
+    if(anchored){
+      void newNode('topic',parent!.id,content,{
+        from:focused!.editor.sourcePosition(selection!.from),
+        to:focused!.editor.sourcePosition(selection!.to),
+        section:focused!.section,revision:current!.note.revision,
+      });
+    }else if(parent)void newNode('topic',parent.id,content);
+    else void createTopicInDefaultFolder(content);
+  }
   else if(action==='navBack')void navigateBack();
   else if(action==='navForward')void navigateForward();
   else if(action==='stopCard')pauseCard();
@@ -1233,17 +1504,9 @@ async function showLinkPicker(ids:string[],at:{x:number;y:number}):Promise<void>
 }
 
 /** 返回上一个界面；只有历史里确实有上一张时才动。 */
-async function navigateBack():Promise<void>{
-  if(navIndex<=0)return;
-  navRestoring=true;
-  try{navIndex--;await open(navStack[navIndex]!);}finally{navRestoring=false;}
-}
+async function navigateBack():Promise<void>{await navHistory.back(id=>open(id));}
 /** 前进到下一个界面；没有"刚返回过"的历史就不做任何事（不是猜下一张）。 */
-async function navigateForward():Promise<void>{
-  if(navIndex<0||navIndex>=navStack.length-1)return;
-  navRestoring=true;
-  try{navIndex++;await open(navStack[navIndex]!);}finally{navRestoring=false;}
-}
+async function navigateForward():Promise<void>{await navHistory.forward(id=>open(id));}
 async function refreshCounts(){
   tree.setCounts(await request<Record<string,FolderCounts>>('folderCounts'));
   renderStudyCounts(study,answerShown);
@@ -1266,13 +1529,14 @@ function applyStudyPresentation(){
   // 不再依赖卡片是否已加载完成（此前异步打开时空档期会把答案露出来）。
   const answer=$('workspace').querySelector<HTMLElement>('.card-pane.answer');
   if(answer&&current){
-    const {hideAnswer:hidden,coverMask}=cardPresentation(current);
+    const {hideAnswer:hidden,coverMask}=presentationFor(current);
     answer.classList.toggle('is-answer-hidden',hidden);const host=answer.querySelector<HTMLElement>('.card-editor');if(host){host.inert=hidden;host.setAttribute('aria-hidden',String(hidden));}
     // 答案未揭开时，**整个下半区（含分隔条与提示文字）都不显示**，题目占满全高；
     // 点「显示答案」后才恢复上下分区。此前只是隐藏编辑器、留着空面板和提示，用户觉得不该出现。
     const card=answer.closest<HTMLElement>('.test-card');
     card?.classList.toggle('answer-collapsed',hidden);
     card?.classList.toggle('is-mask-covered',coverMask);
+    editors?.answer?.setMediaVisible(!hidden);
   }
   renderStudyToggles(study,shortcutTitle);
   renderStudyControls();
@@ -1303,23 +1567,36 @@ function applyStudyPresentation(){
 }
 function renderStudyControls(){
   renderStudyBar({
-    study,current:current?.note??null,answerShown,busy:studyBusy,editing:studyEditing,canUndo:undoHistory.length>0,highlights,
+    study,current:current?.note??null,answerShown,busy:studyBusy,editing:studyEditing,canUndo:undoStack.size()>0,highlights,
   },{
     shortcutTitle,ratingAvailable,grade:gradeStudy,revealAnswer,
     returnToCard:id=>void enqueue(()=>open(id,undefined,true)),
     refresh:()=>void enqueue(async()=>{study=await request<StudySnapshot>('reviewRefresh');await presentStudy();}),
-    enroll:id=>void enqueue(async()=>{
+    enroll:id=>void enrollCard(id),
+  });
+}
+/** 2026-11-19：待办里把检测卡「加入复习」——按钮与快捷键 5 共用同一条路径。 */
+function enrollCard(id:string){
+  void enqueue(async()=>{
+    await save();
+    await request('setStudyEnabled',{id,enabled:true});
+    study=await request<StudySnapshot>('reviewRefresh');
+    // 2026-11-19：「加入复习」也是待办的评价，撤销要能把卡片退回待办暂停
+    recordUndo({run:async applied=>{
       await save();
-      await request('setStudyEnabled',{id,enabled:true});
+      await request('setStudyEnabled',{id,enabled:false});
       study=await request<StudySnapshot>('reviewRefresh');
-      await presentStudy();
-    }),
+      applied();
+      if(study)await presentStudy();else await refreshCounts();
+    }});
+    await presentStudy();
   });
 }
 function revealAnswer(){if(!study?.item||study.item.kind!=='fsrs'||study.item.id!==current?.note.id)return;answerShown=true;applyStudyPresentation();}
 async function presentStudy(){
   if(!study)return;answerShown=false;studyEditing=false;hideStudyMenu();
   if(study.item)await open(study.item.id,undefined,true);
+  else if(study.mode==='reading')emptyWorkspace(t('当前没有可处理的待办卡片。'));
   else emptyWorkspace(study.folderId?t('「{0}」当前没有到期检测卡。',study.folderTitle):t('当前没有到期卡片。可以继续编辑材料，或等待下一次学习步骤。'));
   // 恢复阅读点（只对材料卡；打开后再滚动，避免被 open 的重置覆盖）。
   if(study.item?.kind==='reading'){
@@ -1340,7 +1617,7 @@ async function stopStudy(){
   await save();await request('reviewStop');study=null;answerShown=false;studyEditing=false;hideStudyMenu();
   const target=studyOrigin||current?.note.id;studyOrigin=null;
   if(target&&await request('get',{id:target}))await open(target,undefined,true);
-  else emptyWorkspace(t('从目录树中选择材料。'));
+  else emptyWorkspace(t('从目录树中选择卡片。'));
   applyStudyPresentation();await refreshCounts();
 }
 async function toggleStudy(mode:'cards'|'reading'='cards',folderId?:string){if(study?.mode===mode)await stopStudy();else await startStudy(mode,folderId);}
@@ -1395,14 +1672,23 @@ function gradeStudy(input:StudyAnswer&{againChildren?:AgainChildSelection[]}){
           return;
         }
       }
-      // 阅读点随评分请求一起提交（不能单独发 setReadingPosition——它会让
-      // reading_state.revision+1，随后评分校验判定"复习状态已改变，请刷新"）。
+      // 阅读点随评价请求一起提交（不能单独发 setReadingPosition——它会让
+      // reading_state.revision+1，随后评价校验判定"复习状态已改变，请刷新"）。
       const position=item.kind==='reading'?currentReadingPosition():undefined;
       study=await request<StudySnapshot>('reviewGrade',{...submission,...input,againChildren,...(position===undefined?{}:{position})});
       if(input.action!=='soon'){
         recordUndo({run:async applied=>{
           await save();
           study=await request<StudySnapshot|null>('reviewUndo',{eventId:item.token});
+          applied();
+          if(study)await presentStudy();
+          else await refreshCounts();
+        }});
+      }else{
+        // 2026-11-19：「置于末尾」也能撤销——把它从队尾拿回来，重新作为当前卡片
+        recordUndo({run:async applied=>{
+          await save();
+          study=await request<StudySnapshot|null>('readingUnqueue',{id:item.id});
           applied();
           if(study)await presentStudy();
           else await refreshCounts();
@@ -1418,24 +1704,42 @@ function gradeStudy(input:StudyAnswer&{againChildren?:AgainChildSelection[]}){
     finally{studyBusy=false;renderStudyControls();}
   });
 }
-async function setItemPriority(node:TreeNode,priority:number|null):Promise<void>{
-  if(node.priority===priority)return;
-  await request('setPriority',{id:node.id,priority});
+async function setItemPriority(node:TreeNode,priority:number|null):Promise<boolean>{
+  if(node.priority===priority)return false;
+  const active=study,item=active?.item;
+  const reading=active&&item?.kind==='reading'&&item.id===node.id&&current?.note.id===node.id
+    ?{sessionId:active.sessionId,token:item.token,revision:item.revision,position:currentReadingPosition()}:undefined;
+  if(reading)await save();
+  const reordered=await request<StudySnapshot|undefined>('setPriority',{id:node.id,priority,reading});
   node.priority=priority;tree.update(node);
   if(current?.note.id===node.id)current.note.priority=priority;
+  if(!reordered)return false;
+  study=reordered;
+  await presentStudy();
+  return true;
+}
+async function refreshStudyAfterSettings(){
+  if(!study)return;
+  const previous=study.item?.id;
+  study=await request<StudySnapshot>('reviewRefresh');
+  if(study.item?.id!==previous)await presentStudy();
+  else applyStudyPresentation();
 }
 const preferences=new PreferencesDialog(async(draft,node,priority)=>{
   const result=await request<Configuration>('configSave',{settings:draft.settings,shortcuts:draft.shortcuts});
-  if(node)await setItemPriority(node,priority);
-  configuration=result;applyConfiguration();await refreshCounts();
-  if(study){study=await request<StudySnapshot>('reviewRefresh');applyStudyPresentation();}
+  const reordered=node&&await setItemPriority(node,priority);
+  configuration=result;applyConfiguration();
+  if(!reordered){
+    await refreshCounts();
+    await refreshStudyAfterSettings();
+  }
   return result;
 },async(folderId,overrides)=>{
   await save();const result=await request<DeckConfiguration>('deckConfigSave',{folderId,overrides});
-  if(study){study=await request<StudySnapshot>('reviewRefresh');applyStudyPresentation();}return result;
+  await refreshStudyAfterSettings();return result;
 },()=>void window.reading.openBrowserWindow('conflict').catch(()=>{}),async(node,priority)=>{
-  await setItemPriority(node,priority);
-  if(study){study=await request<StudySnapshot>('reviewRefresh');applyStudyPresentation();}
+  const reordered=await setItemPriority(node,priority);
+  if(study&&!reordered){study=await request<StudySnapshot>('reviewRefresh');applyStudyPresentation();}
 });
 const browser=new CardBrowser($('card-browser'),$('browser-rule'),$('browser-filters'),{
   onInsertMenu:showEditorInsertMenu,onImageContext:showAttachmentMenu,
@@ -1496,12 +1800,14 @@ const browser=new CardBrowser($('card-browser'),$('browser-rule'),$('browser-fil
       await save();
       for(const item of removed)await request('trashRestore',{id:item.id});
       applied();
+      await refreshAnchors();
       await tree.refresh([null]);
       await refreshCounts();
       if(study){study=await request<StudySnapshot>('reviewRefresh');await presentStudy();}
       if(browser.visible)void browser.refresh();
     }});
-    if(current&&removed.some(item=>item.id===current?.note.id))emptyWorkspace(t('从目录树中选择材料。'));
+    if(current&&removed.some(item=>item.id===current?.note.id))emptyWorkspace(t('从目录树中选择卡片。'));
+    await refreshAnchors();
     await tree.refresh([null]);
     await refreshCounts();
     if(study){study=await request<StudySnapshot>('reviewRefresh');await presentStudy();}
@@ -1559,7 +1865,11 @@ window.reading.onSyncedContent((applied,parentId,nodeId)=>void enqueue(async()=>
     if(nodeId){const created=await request<Material|null>('get',{id:nodeId});if(created)recordCreation(created);}
     await refreshCounts();await refreshRelations();
   }
-  else await refreshCounts();
+  else{
+    configuration=await request<Configuration>('configGet');
+    applyConfiguration();
+    await refreshCounts();
+  }
   if(browser.visible)void browser.refresh();
 }));
 function applyDirectory(){
@@ -1575,16 +1885,19 @@ function hideStudyMenu(){$('study-more-menu').hidden=true;$('study-more').setAtt
 async function toggleStudyEditing(){
   if(studyBusy||!study?.item||study.item.id!==current?.note.id)return;
   await save();
-  // 待办里的材料本来就能编辑——按钮/Alt+E 直接打开当前材料并聚焦编辑区。
-  if(study.item.kind==='reading'){await open(study.item.id,undefined,true);return;}
+  // 2026-11-19：复习与待办走同一条路径——平时只读，按「编辑」/Alt+E 才进入编辑，再按一次退出。
   studyEditing=!studyEditing;
-  if(studyEditing){answerShown=true;await open(study.item.id,undefined,true);}
+  if(studyEditing){
+    if(editorMode==='reading')setEditorMode('live');
+    if(study.item.kind==='fsrs')answerShown=true;
+    await open(study.item.id,undefined,true);
+  }
   else{
     const previous=study.item.id;study=await request<StudySnapshot>('reviewRefresh');
     if(study.item?.id===previous)await open(previous,undefined,true);else await presentStudy();
   }
 }
-function applyConfiguration(){fontSize=configuration.settings.fontSize;document.documentElement.style.setProperty('--text-size',fontSize+'px');document.documentElement.dataset.theme=configuration.settings.theme;applyCustomCss(configuration.settings.customCss);}
+function applyConfiguration(){fontSize=configuration.settings.fontSize;document.documentElement.style.setProperty('--text-size',fontSize+'px');document.documentElement.dataset.theme='dark';applyCustomCss(configuration.settings.customCss);}
 /** 外观自定义 CSS——写进一个 <style>，留空则移除。 */
 function applyCustomCss(css:string|undefined){
   const text=(css||'').trim();
@@ -1626,15 +1939,24 @@ function flashCardNotice(text:string):void{
 }
 // 搁置（菜单项与快捷键 `=` 共用）
 function buryCurrent():void{
-  const id=study?.item?.id||current?.note.id;
-  if(!id)return;
+  if(studyBusy||studyEditing||!study?.item||study.item.id!==current?.note.id)return;
+  const {sessionId,item}=study;
+  studyBusy=true;renderStudyControls();
   void enqueue(async()=>{
     try{
-      await request('buryCard',{id});
-      cardFlags.set(id,{...(cardFlags.get(id)||{}),buried:true});
-      applyCardBadge();hideStudyMenu();
+      await save();
+      const {change,study:next}=await request<ReturnType<StudyService['buryActive']>>('buryCard',{sessionId,token:item.token,revision:item.revision});
+      study=next;
+      recordUndo({run:async applied=>{
+        await save();
+        study=await request<StudySnapshot|null>('undoBuryCard',{change,sessionId});
+        applied();cardFlags.delete(item.id);
+        if(study)await presentStudy();else{await open(item.id,undefined,true);await refreshCounts();}
+      }});
+      cardFlags.set(item.id,{...(cardFlags.get(item.id)||{}),buried:true});
+      await presentStudy();
       flashCardNotice(t('已搁置到下一个日切点'));
-    }catch(error){message((error as Error).message);}
+    }finally{studyBusy=false;renderStudyControls();}
   });
 }
 function pauseCard():void{void enqueue(async()=>{
@@ -1663,48 +1985,53 @@ function pauseReview():void{void enqueue(async()=>{
   hideStudyMenu();
   if(!study?.item||study.item.kind!=='fsrs')return;
   await save();
-  const id=study.item.id;
-  await request('setStudyEnabled',{id,enabled:false});
-  study=await request<StudySnapshot>('reviewRefresh');await presentStudy();
-  if(current?.note.id===id)await open(id,undefined,true);
-  cardFlags.set(id,{...(cardFlags.get(id)||{}),reviewEnabled:false,pushEnabled:true});
+  const {sessionId,item}=study;
+  // 2026-11-17：暂停时把排程快照一起带回来，撤销时原样写回（不再走「取消暂停＝当新卡」那条路）
+  const {change,study:next}=await request<{change:{id:string;before:unknown;after:unknown}|null;study:StudySnapshot}>('pauseCard',{sessionId,token:item.token,revision:item.revision});
+  study=next;
+  recordUndo({run:async applied=>{
+    const restored=await request<StudySnapshot|null>('undoPauseCard',{change,sessionId});
+    applied();
+    study=restored;
+    cardFlags.set(item.id,{...(cardFlags.get(item.id)||{}),reviewEnabled:true,pushEnabled:true});
+    if(study){
+      await presentStudy();
+      await tree.reveal(item.id);
+    }else{
+      await open(item.id,undefined,true);
+    }
+    applyCardBadge();
+    message(study?.pauseUndoStale
+      ? t('卡片期间已有新的排程变化，未覆盖新状态；已按当前状态保持待办暂停。')
+      : t('已撤销：卡片恢复暂停前的排程。'));
+  }});
+  cardFlags.set(item.id,{...(cardFlags.get(item.id)||{}),reviewEnabled:false,pushEnabled:true});
+  // 2026-11-17：待办暂停后直接呈现队列里的下一张，不再把已暂停的卡片重新打开。
+  await presentStudy();
   applyCardBadge();
+  // 2026-11-17：只保留工作区左下角那条短提示，右上角黄色横幅不再弹（和左下角重复）
   flashCardNotice(t('上张卡片已进入待办暂停'));
-  message(t('已进入待办暂停：暂停复习，卡片仍留在待办里继续读。'));
 });}$('study-pause-review').onclick=pauseReview;
-// 搁置到明天（只对检测卡有意义）
-$('study-bury').onclick=()=>{
-  const id=current?.note.id;
-  if(!id)return;
-  void enqueue(async()=>{
-    try{
-      await request('buryCard',{id});
-      cardFlags.set(id,{...(cardFlags.get(id)||{}),buried:true});
-      applyCardBadge();
-      hideStudyMenu();
-      message(t('已搁置到明天（下一个日切点会自动回到队列）。'));
-    }catch(error){message((error as Error).message);}
-  });
-};
+$('study-bury').onclick=buryCurrent;
 $('study-undo').onclick=undoLatest;
 // 优先级弹窗——显示当前值，输入 0–9 后回车保存（ask 的输入框在表单里，回车即提交）。
 $('study-priority').onclick=()=>void enqueue(async()=>{
-  if(!study?.item||study.item.kind!=='reading')return;
-  const current=study.item.priority;
-  const text=await ask(t('设置优先级（0–9，0 绝对优先、1 最高、9 最低）'),String(current));
+  const item=study?.item,node=current?.note;
+  if(item?.kind!=='reading'||node?.id!==item.id)return;
+  const text=await ask(t('设置优先级（0–9，0 绝对优先、1 最高、9 最低）'),String(item.priority));
   if(text===null)return;
   const parsed=Number(text);
-  if(!Number.isInteger(parsed)||parsed<0||parsed>9){message(t('优先级需为 0–9 的整数。'));return;}
-  await request('setPriority',{id:study.item.id,priority:parsed});
-  const node=await request<TreeNode>('get',{id:study.item.id});if(node)tree.update(node);
-  study=await request<StudySnapshot>('reviewRefresh');await presentStudy();
+  if(!text.trim()||!Number.isInteger(parsed)||parsed<0||parsed>9){message(t('优先级需为 0–9 的整数。'));return;}
+  if(parsed!==item.priority)await setItemPriority(node,parsed);
 });
 $('study-edit').onclick=()=>void enqueue(toggleStudyEditing);
 $('study-more').onclick=()=>{const menu=$('study-more-menu');menu.hidden=!menu.hidden;$('study-more').setAttribute('aria-expanded',String(!menu.hidden));};
 $('study-browse').onclick=()=>{hideStudyMenu();void window.reading.openBrowserWindow(undefined,current?.note.id||null).catch(()=>{});};
 // 更多里的「退出复习」已移除（用 Alt+R 或侧栏按钮退出）
 for(const button of $('highlight-controls').querySelectorAll<HTMLButtonElement>('button'))button.onclick=()=>{
-  if(!current)return;const key=button.dataset.highlight;if(key==='all'){const value=!(highlights.extract&&highlights.cloze);highlights={extract:value,cloze:value};}else highlights={...highlights,[key!]:!highlights[key as 'extract'|'cloze']};
+  if(!current)return;const key=button.dataset.highlight;
+  if(key==='all'){const value=!(highlights.extract&&highlights.cloze&&highlights.topic);highlights={extract:value,cloze:value,topic:value};}
+  else highlights={...highlights,[key!]:!highlights[key as 'extract'|'cloze'|'topic']};
   editors?.question.setHighlights(highlights);editors?.answer?.setHighlights(highlights);renderStudyControls();void request('settingSet',{key:'highlights:'+current.note.id,value:highlights});
 };
 function applyDirectoryTypes(){updateTreeFilters($('directory-filters'),directoryTypes);}
@@ -1748,11 +2075,49 @@ async function mountAddCardWindow():Promise<void>{
   contentInput.placeholder=t('正文（Markdown）。检测卡请在要挖空的位置写 [...]');
   const answerInput=document.createElement('textarea');answerInput.rows=2;answerInput.placeholder=t('答案（检测卡必填，否则不进复习队列）');
   const answerField=field(t('答案'),answerInput);
+  // 2026-11-19：正文/答案支持 Ctrl+B / Ctrl+I（和主编辑区一致）
+  for(const area of [contentInput,answerInput]){
+    area.addEventListener('keydown',event=>{
+      if(!(event.ctrlKey||event.metaKey)||event.altKey)return;
+      const key=event.key.toLowerCase();
+      if(key!=='b'&&key!=='i')return;
+      event.preventDefault();
+      const wrap=key==='b'?'**':'*';
+      const start=area.selectionStart,end=area.selectionEnd;
+      const selected=area.value.slice(start,end)||t('文字');
+      area.setRangeText(wrap+selected+wrap,start,end,'select');
+      area.dispatchEvent(new Event('input',{bubbles:true}));
+    });
+  }
+  // 2026-11-19：类型下拉支持输入「/」展开搜索，输入文字过滤，回车锁定
+  const kindSearch=document.createElement('input');kindSearch.type='text';
+  kindSearch.placeholder=t('输入 / 搜索类型');kindSearch.hidden=true;
+  const allKinds=[...kindSelect.options].map(option=>({value:option.value,label:option.textContent||''}));
+  const applyKindFilter=(query:string)=>{
+    const text=query.trim().toLowerCase();
+    for(const option of [...kindSelect.options]){
+      const match=allKinds.find(item=>item.value===option.value);
+      option.hidden=!!text&&!!match&&!match.label.toLowerCase().includes(text);
+    }
+    const first=[...kindSelect.options].find(option=>!option.hidden);
+    if(first)kindSelect.value=first.value;
+  };
+  kindSearch.addEventListener('input',()=>{applyKindFilter(kindSearch.value);syncKind();});
+  kindSearch.addEventListener('keydown',event=>{
+    if(event.key==='Enter'){event.preventDefault();kindSearch.hidden=true;kindSearch.value='';applyKindFilter('');kindSelect.focus();}
+    if(event.key==='Escape'){event.preventDefault();kindSearch.hidden=true;kindSearch.value='';applyKindFilter('');}
+  });
+  kindSelect.addEventListener('keydown',event=>{
+    if(event.key==='/'){event.preventDefault();kindSearch.hidden=false;kindSearch.focus();}
+  });
   const submit=document.createElement('button');submit.type='submit';submit.className='primary';submit.textContent=t('添加');
   const hint=document.createElement('p');hint.className='add-hint';
   hint.textContent=t('Ctrl+Enter 添加 · Esc 关闭窗口。添加后会清空正文，方便连续添加。');
   const footer=document.createElement('div');footer.className='add-actions';footer.append(submit);
-  form.append(heading,field(t('类型'),kindSelect),field(t('位置'),folderSelect),field(t('标题'),titleInput),field(t('正文'),contentInput),answerField,footer,hint);
+  // 「类型」这一栏同时放下拉和它的搜索框（搜索框平时隐藏，选中下拉后按 / 才出现）
+  const kindField=document.createElement('div');kindField.className='add-kind';
+  kindField.append(kindSelect,kindSearch);
+  form.append(heading,field(t('类型'),kindField),field(t('位置'),folderSelect),field(t('标题'),titleInput),field(t('正文'),contentInput),answerField,footer,hint);
   workspace.append(form);
   const syncKind=()=>{answerField.hidden=kindSelect.value!=='cloze';};
   kindSelect.onchange=syncKind;syncKind();
@@ -1810,7 +2175,9 @@ void enqueue(async()=>{
   const last=typeof localLast==='string'&&localLast?localLast:dbLast;
   if(typeof last==='string'&&last)void window.reading.uiStateSet('lastNode',last).catch(()=>{});
   if(size){fontSize=Math.max(10,Math.min(48,size));document.documentElement.style.setProperty('--text-size',fontSize+'px');}
-  if(theme)document.documentElement.dataset.theme=theme;
+  // 2026-11-20：浅色主题已归档到 archive/theme-light/，界面固定深色（忽略数据库里残留的 theme）
+  document.documentElement.dataset.theme='dark';
+  void theme;
   if(width)document.documentElement.style.setProperty('--sidebar-width',width+'px');
   const savedTypes=await request('settingGet',{key:'directoryTypes'});directoryTypes=Array.isArray(savedTypes)?savedTypes.filter(type=>['topic','material','cloze'].includes(type)):[];
   applyDirectoryTypes();await tree.setTypes(directoryTypes);

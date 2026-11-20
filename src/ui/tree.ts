@@ -8,8 +8,10 @@ interface Row {node:TreeNode|null;parentId:string|null;depth:number;last:boolean
 export interface TreeActions {
   select:(node:TreeNode)=>void;
   context:(node:TreeNode|null,event:MouseEvent)=>void;
-  move:(nodes:TreeNode[],parentId:string|null,peerId?:string)=>void;
+  move:(nodes:TreeNode[],parentId:string|null,peerId?:string,allowCardParent?:boolean)=>void;
   rename:(node:TreeNode)=>void;
+  canRelate:(nodes:TreeNode[])=>boolean;
+  relate:(nodes:TreeNode[])=>void;
   /** 点目录树空白处取消牌组聚焦。 */
   deselect?:()=>void;
 }
@@ -77,11 +79,17 @@ export class DirectoryTree {
       event.preventDefault();actions.context(null,event);
     };
     const rootDrop=()=>this.dragged.length>0&&this.dragged.every(node=>node.kind==='folder');
-    host.ondragover=event=>{if(rootDrop()&&!(event.target as HTMLElement).closest('.tree-row')){event.preventDefault();host.classList.add('drop-root');}};
+    const relatedDrop=()=>this.dragged.length>0&&this.dragged.every(node=>node.kind!=='folder')&&this.actions.canRelate(this.dragged);
+    host.ondragover=event=>{
+      if((event.target as HTMLElement).closest('.tree-row')||(!rootDrop()&&!relatedDrop()))return;
+      event.preventDefault();host.classList.add('drop-root');
+    };
     host.ondragleave=()=>host.classList.remove('drop-root');
     host.ondrop=event=>{
-      if(!rootDrop()||(event.target as HTMLElement).closest('.tree-row'))return;
-      event.preventDefault();host.classList.remove('drop-root');this.actions.move(this.dragged,null);this.dragged=[];
+      if((event.target as HTMLElement).closest('.tree-row')||(!rootDrop()&&!relatedDrop()))return;
+      event.preventDefault();host.classList.remove('drop-root');
+      if(rootDrop())this.actions.move(this.dragged,null);else this.actions.relate(this.dragged);
+      this.dragged=[];
     };
     new ResizeObserver(()=>this.render()).observe(host);
   }
@@ -94,6 +102,7 @@ export class DirectoryTree {
     if(this.selection.anchor!==id)this.selection.select(id);
     this.render();
   }
+  draggedCards():TreeNode[]{return this.dragged.filter(node=>node.kind!=='folder');}
   selectedForMove(node:TreeNode):TreeNode[]{
     if(!this.selection.includes(node.id))return [node];
     return this.flattened.flatMap(({node})=>node&&this.selection.includes(node.id)?[node]:[]);
@@ -205,9 +214,16 @@ export class DirectoryTree {
     try{await this.load(node.id);}finally{this.flatten();}
   }
 
-  async refresh(parentIds:Array<string|null>):Promise<void>{
+  async refresh(parentIds:Array<string|null>,expandId?:string):Promise<void>{
+    if(expandId)this.expanded.add(expandId);
     if(this.types.length){await this.reset();return;}
-    for(const parentId of new Set(parentIds)){
+    const branches=new Set(parentIds);
+    // The expand toggle belongs to the parent row, which is stored in its own parent’s branch.
+    for(const id of parentIds){
+      const node=id?this.nodes.get(id):undefined;
+      if(node)branches.add(node.parentId);
+    }
+    for(const parentId of branches){
       const branch=this.cache.get(this.key(parentId));
       if(branch)branch.loaded=false;
       await this.load(parentId);
@@ -267,6 +283,7 @@ export class DirectoryTree {
       }
       const node=items[frame.index++],last=frame.index===items.length&&!branch?.cursor;
       this.indexByNode.set(node.id,result.length);result.push({node,parentId:frame.parentId,depth:frame.depth,last,ancestors:frame.ancestors});
+      if(node.kind!=='folder'&&!node.hasChildren)this.expanded.delete(node.id);
       if(this.expanded.has(node.id))stack.push({parentId:node.id,depth:frame.depth+1,ancestors:[...frame.ancestors,last],index:0,items:branchRows(node.id)});
     }
     this.flattened=result;
@@ -378,20 +395,24 @@ export class DirectoryTree {
       (folder||(parentId!==null&&(
         this.nodes.get(parentId)?.kind==='folder'||this.dragged.every(node=>node.kind!=='folder')
       )));
-    const marker=folder?'is-drop-target':'is-list-drop-target';
+    const toChildren=(event:DragEvent)=>{
+      if(folder||this.dragged.some(node=>node.kind==='folder'))return folder;
+      const bounds=element.getBoundingClientRect(),offset=(event.clientY-bounds.top)/bounds.height;
+      return offset>=.2&&(offset<=.8||this.expanded.has(target.id));
+    };
+    const clear=()=>element.classList.remove('is-drop-target','is-list-drop-target');
     element.ondragover=event=>{
       if(!canDrop())return;
-      event.preventDefault();event.stopPropagation();
+      event.preventDefault();event.stopPropagation();clear();
       if(event.dataTransfer)event.dataTransfer.dropEffect='move';
-      element.classList.add(marker);
+      element.classList.add(toChildren(event)?'is-drop-target':'is-list-drop-target');
     };
-    element.ondragleave=()=>element.classList.remove(marker);
+    element.ondragleave=clear;
     element.ondrop=event=>{
       if(!canDrop())return;
-      event.preventDefault();event.stopPropagation();
-      element.classList.remove(marker);
-      const nodes=this.dragged;this.dragged=[];
-      this.actions.move(nodes,parentId,folder?undefined:target.id);
+      event.preventDefault();event.stopPropagation();clear();
+      const child=toChildren(event),nodes=this.dragged;this.dragged=[];
+      this.actions.move(nodes,child?target.id:parentId,child?undefined:target.id,child&&!folder);
     };
   }
 

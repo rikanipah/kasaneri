@@ -1,7 +1,7 @@
 import { t } from '../core/i18n';
 import type { Repository } from '../data/database';
-import { applyLeechEffect,collectSyncOps, type SyncConflict, type SyncOp } from './engine';
-import {selectStudyChange,studyChangePrefix} from './study-changes';
+import { applyLeechEffect,collectSyncOps,syncedReviewColumns, type SyncConflict, type SyncOp } from './engine';
+import {parseSchedule,readSchedule,sameSchedule,selectStudyChange,studyChangePrefix} from './study-changes';
 import type { SyncConflictChoice, SyncConflictResolution } from '../core/model';
 
 export const conflictResolutionKey=(file:string)=>'syncResolution:'+file;
@@ -66,8 +66,9 @@ function applySelection(repository:Repository,incoming:SyncOp,local:SyncOp,selec
       const next=choice==='local'?onDevice:fromPeer;
       const currentOp=matches(onDevice)?local:incoming;
       if(currentOp.id!==selected.id)applyLeechEffect(repository,currentOp,'previous');
-      repository.query('UPDATE review_cards SET state=?,due_at=?,stage=?,algorithm_version=COALESCE(?,algorithm_version),revision=revision+1,updated_at=? WHERE node_id=?')
-        .run(next.state,next.due,next.stage,selected.algorithmVersion,new Date().toISOString(),node.id);
+      const cols=syncedReviewColumns(repository,JSON.parse(next.state),selected.reviewedAt,next.due);
+      repository.query('UPDATE review_cards SET state=?,due_at=?,stage=?,day_learning=?,learning_step=?,algorithm_version=COALESCE(?,algorithm_version),revision=revision+1,updated_at=? WHERE node_id=?')
+        .run(next.state,next.due,cols.stage,cols.dayLearning,cols.learningStep,selected.algorithmVersion,Date.now(),node.id);
       applyLeechEffect(repository,selected);
     }else if(incoming.kind==='reading'){
       const current=repository.query('SELECT * FROM reading_state WHERE node_id=?').get(node.id);
@@ -123,6 +124,68 @@ export function applySyncDecisions(repository:Repository,values:unknown):{applie
     }catch(error){errors.push(error instanceof Error?error.message:String(error));}
   }
   return {applied,errors:[...new Set(errors)]};
+}
+
+/**
+ * 2026-11-21：排程冲突只有在「本机当前排程仍是双方之一」时才能应用。
+ * 卡片在那之后又复习/改过（两边都已过期）时，记录永远不可能生效，属于陈旧记录：
+ * 保留在列表里只会让人点了报错，应当在同步时归档到 conflicts/resolved/。
+ */
+export function isObsoleteConflict(repository:Repository,conflict:SyncConflict):boolean{
+  const incoming=conflict?.incoming,local=conflict?.local;
+  if(!incoming||!local||incoming.kind!==local.kind)return false;
+  const nodeId=String(conflict.nodeId||'');
+  if(!nodeId)return false;
+  const at=Number(conflict.opAt||(conflict as unknown as {at?:number}).at||0);
+
+  // ① 排程冲突：本机还停在某一侧就仍然可用，否则看卡片是否在冲突之后又更新过。
+  if(incoming.kind==='schedule'){
+    const current=readSchedule(repository,nodeId);
+    if(!current)return false;
+    let a,b;
+    try{a=parseSchedule(local.afterState);b=parseSchedule(incoming.afterState);}catch{return false;}
+    if(sameSchedule(current,a)||sameSchedule(current,b))return false;
+    return latestCardActivity(repository,nodeId)>at;
+  }
+
+  // ② 评分冲突：只有本机当前状态正好是某一边时才能覆盖（和 applySelection 的判定一致）。
+  if(incoming.kind==='fsrs'){
+    const row=repository.query('SELECT state,due_at,stage FROM review_cards WHERE node_id=?').get(nodeId);
+    if(!row)return false;
+    const matches=(state:string)=>{
+      try{const value=reviewSchedule(state);
+        return row.state===value.state&&Number(row.due_at)===value.due&&Number(row.stage)===value.stage;
+      }catch{return false;}
+    };
+    if(matches(local.afterState)||matches(incoming.afterState))return false;
+    return latestCardActivity(repository,nodeId)>at;
+  }
+
+  // ③ 阅读冲突：同上，按 reading_state 的五个字段比对。
+  if(incoming.kind==='reading'){
+    const row=repository.query('SELECT due_at,interval_ms,reps,last_read_at,enabled FROM reading_state WHERE node_id=?').get(nodeId);
+    if(!row)return false;
+    const actual=readingSchedule(row);
+    const matches=(state:string)=>{
+      try{return readingSchedule(JSON.parse(state)).every((item,index)=>item===actual[index]);}catch{return false;}
+    };
+    if(matches(local.afterState)||matches(incoming.afterState))return false;
+    return Number(row.last_read_at||0)>at;
+  }
+
+  return false;
+}
+
+/** 这张卡最近一次复习/阅读的时间；用来判断冲突记录是否已被后续操作覆盖。 */
+function latestCardActivity(repository:Repository,nodeId:string):number{
+  let review=0,reading=0;
+  try{
+    const row=repository.query('SELECT state FROM review_cards WHERE node_id=?').get(nodeId);
+    const state=JSON.parse(String(row?.state||'{}'));
+    review=state?.lastReviewAt?Date.parse(String(state.lastReviewAt)):0;
+  }catch{review=0;}
+  try{reading=Number(repository.query('SELECT last_read_at FROM reading_state WHERE node_id=?').get(nodeId)?.last_read_at||0);}catch{reading=0;}
+  return Math.max(Number.isFinite(review)?review:0,reading);
 }
 
 export function resolveSyncConflict(repository:Repository,file:string,conflict:SyncConflict,choice:SyncConflictChoice):SyncConflictResolution{

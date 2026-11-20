@@ -3,10 +3,8 @@ import type {CardRelation,CardRelationCandidate,CardRelationKey,MemoryTreeCard,M
 import type {Repository} from './database';
 
 interface MemoryTreeRow extends MemoryTreeLink {
-  type:'card'|'child'|'related';
-  ownerId:string|null;
-  isRoot:number;
-  onPath:number;
+  role:'current'|'parent'|'child'|'related';
+  manual:number;
 }
 
 export class CardRelations {
@@ -25,52 +23,61 @@ export class CardRelations {
 
   tree(id:string):MemoryTreeSnapshot{
     const rows=this.repository.query(`
-      WITH RECURSIVE ancestors(id) AS (
-        SELECT id FROM nodes WHERE id=? AND kind<>'folder' AND deleted_at IS NULL
-        UNION
-        SELECT parent.id FROM ancestors a
-        JOIN card_relations r ON r.child_id=a.id AND r.kind='memory'
-        JOIN nodes parent ON parent.id=r.parent_id AND parent.deleted_at IS NULL AND parent.kind<>'folder'
-      ), roots(id) AS (
-        SELECT a.id FROM ancestors a WHERE NOT EXISTS (
-          SELECT 1 FROM card_relations r JOIN ancestors parent ON parent.id=r.parent_id
-          WHERE r.child_id=a.id AND r.kind='memory'
-        )
-      ), members(id) AS (
-        SELECT id FROM roots
-        UNION
-        SELECT child.id FROM members parent
-        JOIN card_relations r ON r.parent_id=parent.id AND r.kind='memory'
-        JOIN nodes child ON child.id=r.child_id AND child.deleted_at IS NULL AND child.kind<>'folder'
+      WITH current AS (
+        SELECT id,parent_id FROM nodes WHERE id=? AND deleted_at IS NULL AND kind<>'folder'
+      ), connections(role,id,manual) AS (
+        SELECT 'current',id,0 FROM current
+        UNION ALL SELECT 'parent',parent_id,0 FROM current
+        UNION ALL SELECT 'child',child.id,0 FROM current JOIN nodes child ON child.parent_id=current.id
+        UNION ALL
+        SELECT CASE WHEN r.child_id=current.id THEN 'parent' ELSE 'child' END,
+          CASE WHEN r.child_id=current.id THEN r.parent_id ELSE r.child_id END,1
+        FROM current JOIN card_relations r ON r.parent_id=current.id OR r.child_id=current.id
+        WHERE r.kind='memory'
+        UNION ALL
+        SELECT 'related',CASE WHEN r.child_id=current.id THEN r.parent_id ELSE r.child_id END,0
+        FROM current JOIN card_relations r ON r.parent_id=current.id OR r.child_id=current.id
+        WHERE r.kind='related'
       )
-      SELECT 'card' AS type,NULL AS ownerId,n.id AS id,n.title AS title,n.kind AS kind,
-        roots.id IS NOT NULL AS isRoot,ancestors.id IS NOT NULL AS onPath
-      FROM members m JOIN nodes n ON n.id=m.id
-      LEFT JOIN roots ON roots.id=m.id LEFT JOIN ancestors ON ancestors.id=m.id
-      UNION ALL
-      SELECT 'child',parent.id,child.id,child.title,child.kind,0,0 FROM members parent
-      JOIN card_relations r ON r.parent_id=parent.id AND r.kind='memory'
-      JOIN members included ON included.id=r.child_id JOIN nodes child ON child.id=included.id
-      UNION ALL
-      SELECT 'related',m.id,other.id,other.title,other.kind,0,0 FROM members m
-      JOIN card_relations r ON r.kind='related' AND (r.parent_id=m.id OR r.child_id=m.id)
-      JOIN nodes other ON other.id=CASE WHEN r.parent_id=m.id THEN r.child_id ELSE r.parent_id END
-        AND other.deleted_at IS NULL AND other.kind<>'folder'
-      ORDER BY title COLLATE NOCASE,id
+      SELECT link.role,n.id,n.title,n.kind,MAX(link.manual) AS manual
+      FROM current CROSS JOIN connections link JOIN nodes n ON n.id=link.id
+      WHERE n.deleted_at IS NULL AND n.kind<>'folder'
+        -- 目录关系与手动关系方向冲突时，按目录中的层级显示。
+        AND (link.role<>'parent' OR n.parent_id IS NOT current.id)
+        AND (link.role<>'child' OR current.parent_id IS NOT n.id)
+      GROUP BY link.role,n.id ORDER BY n.title COLLATE NOCASE,n.id
     `).all(id) as unknown as MemoryTreeRow[];
-    const cards=new Map<string,MemoryTreeCard>(),roots:string[]=[];
-    for(const row of rows){
-      if(row.type!=='card')continue;
-      cards.set(row.id,{id:row.id,title:row.title,kind:row.kind,onPath:!!row.onPath,children:[],related:[]});
-      if(row.isRoot)roots.push(row.id);
-    }
-    for(const row of rows){
-      if(!row.ownerId)continue;
-      const owner=cards.get(row.ownerId)!;
-      if(row.type==='child')owner.children.push(row.id);
-      else owner.related.push({id:row.id,title:row.title,kind:row.kind});
-    }
-    return {roots,cards:[...cards.values()]};
+    const current=rows.find(row=>row.role==='current');
+    if(!current)return {roots:[],cards:[]};
+
+    const parents=rows.filter(row=>row.role==='parent');
+    const parentIds=new Set(parents.map(row=>row.id));
+    const children=rows.filter(row=>row.role==='child'&&!parentIds.has(row.id));
+    const card=(row:MemoryTreeRow,onPath:boolean):MemoryTreeCard=>({
+      id:row.id,title:row.title,kind:row.kind,onPath,children:[],memoryChildren:[],related:[],
+    });
+    const focus=card(current,true);
+    focus.children=children.map(child=>child.id);
+    focus.memoryChildren=children.filter(child=>child.manual).map(child=>child.id);
+    focus.related=rows.filter(row=>row.role==='related').map(({id,title,kind})=>({id,title,kind}));
+    const siblingCards=new Map<string,MemoryTreeCard>();
+    const focusChildren=new Set(focus.children);
+    const parentConnections=parents.length?this.repository.query(`
+      WITH parents AS (SELECT value AS id FROM json_each(?)), edges AS (
+        SELECT p.id AS owner,n.id,0 AS manual FROM parents p JOIN nodes n ON n.parent_id=p.id
+        UNION ALL SELECT p.id,r.child_id,1 FROM parents p JOIN card_relations r ON r.parent_id=p.id AND r.kind='memory'
+      )
+      SELECT e.owner,n.id,n.title,n.kind,MAX(e.manual) AS manual
+      FROM edges e JOIN nodes n ON n.id=e.id AND n.deleted_at IS NULL AND n.kind<>'folder'
+      GROUP BY e.owner,n.id ORDER BY n.title COLLATE NOCASE,n.id
+    `).all(JSON.stringify([...parentIds])) as unknown as Array<MemoryTreeRow&{owner:string}>:[];
+    const parentCards=parents.map(parent=>{
+      const siblings=parentConnections.filter(row=>row.owner===parent.id&&row.id!==id&&!parentIds.has(row.id)&&!focusChildren.has(row.id));
+      for(const sibling of siblings)siblingCards.set(sibling.id,card(sibling,false));
+      return {...card(parent,true),children:[id,...siblings.map(row=>row.id)],
+        memoryChildren:[...(parent.manual?[id]:[]),...siblings.filter(row=>row.manual).map(row=>row.id)]};
+    });
+    return {roots:parents.length?[...parentIds]:[id],cards:[...parentCards,focus,...children.map(child=>card(child,false)),...siblingCards.values()]};
   }
 
   createChild(id:string,title:string,kind?:MemoryTreeLink['kind']){
@@ -83,6 +90,24 @@ export class CardRelations {
     });
   }
 
+  addMemoryChild(id:string,targetId:string):boolean{
+    if(typeof id!=='string'||typeof targetId!=='string'||id===targetId)throw Error(t('请选择另一张检测卡片。'));
+    return this.repository.transaction(()=>{
+      const parent=this.repository.getNode(id),child=this.repository.getNode(targetId);
+      if(!parent||parent.kind==='folder'||!child||child.kind==='folder')throw Error(t('卡片不存在。'));
+      if(this.repository.query("SELECT 1 FROM card_relations WHERE parent_id=? AND child_id=? AND kind='memory'").get(id,targetId))return false;
+      const cycle=this.repository.query(`WITH RECURSIVE edges(parentId,childId) AS (
+        SELECT parent_id,id FROM nodes WHERE deleted_at IS NULL AND kind<>'folder'
+        UNION SELECT parent_id,child_id FROM card_relations WHERE kind='memory'
+        UNION SELECT dependent_id,prerequisite_id FROM card_dependency_overrides WHERE mode='require'
+      ), descendants(id) AS (
+        VALUES (?) UNION SELECT edges.childId FROM edges JOIN descendants ON edges.parentId=descendants.id
+      ) SELECT 1 FROM descendants WHERE id=?`).get(targetId,id);
+      if(cycle)throw Error(t('这条先修关系会形成循环。'));
+      return this.insert({parentId:id,childId:targetId,kind:'memory'});
+    });
+  }
+
   addRelated(id:string,targetId:string):boolean{
     if(typeof id!=='string'||typeof targetId!=='string'||id===targetId)throw Error(t('请选择另一张卡片。'));
     return this.repository.transaction(()=>{
@@ -90,6 +115,14 @@ export class CardRelations {
       if(!card||card.kind==='folder'||!target||target.kind==='folder')throw Error(t('卡片不存在。'));
       const [parentId,childId]=[id,targetId].sort();
       return this.insert({parentId,childId,kind:'related'});
+    });
+  }
+
+  removeAll(id:string):number{
+    return this.repository.transaction(()=>{
+      const edges=this.repository.query('SELECT parent_id AS parentId,child_id AS childId,kind FROM card_relations WHERE parent_id=? OR child_id=?')
+        .all(id,id) as unknown as CardRelationKey[];
+      return edges.filter(edge=>this.remove(id,edge)).length;
     });
   }
 

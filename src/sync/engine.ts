@@ -1,7 +1,8 @@
 import { t } from '../core/i18n';
-// 评分与阅读沿用原日志格式。新版对端另交换队列状态和撤销操作。
+// 评价与阅读沿用原日志格式。新版对端另交换队列状态和撤销操作。
 // 重放按事件编号去重，缺卡时先暂存，有分歧时保留双方排程供选择。
 import type {Repository} from '../data/database';
+import {dayStartMs} from '../study/quota';
 import {applyStudyChange,readSchedule,studyChangeFromRow,studyChangePrefix,studyChangeRows,studyChangeSession} from './study-changes';
 
 export interface SyncOp {
@@ -59,6 +60,14 @@ export function collectSyncIds(repository:Repository,includeStudyChanges=false):
 }
 
 const stageOf=(state:any)=>Number(state?.state??0);
+export function syncedReviewColumns(repository:Repository,after:any,referenceNow:number,dueAt:number){
+  const stage=stageOf(after);
+  const learningStep=Math.max(0,Math.floor(Number(after?.learningStep??0)))||0;
+  const rawHour=Number((repository.getSetting('studySettings') as any)?.dayStartHour??4);
+  const hour=Number.isFinite(rawHour)&&rawHour>=0&&rawHour<=23?Math.round(rawHour):4;
+  const dayLearning=(stage===1||stage===3)&&dueAt>=dayStartMs(referenceNow,hour)+86400000?1:0;
+  return {stage,learningStep,dayLearning};
+}
 export function applyLeechEffect(repository:Repository,op:SyncOp,side:'previous'|'after'='after'):void{
   let effect;
   try{effect=JSON.parse(op.details)?.leechEffect;}catch{return;}
@@ -166,8 +175,9 @@ export function applySyncOps(repository:Repository,ops:SyncOp[],options:{clockTo
           
           // ts-fsrs 的卡状态 JSON 用 dueAt/lastReviewAt（驼峰），不是 SQL 行的 due_at
           const dueAt=after.dueAt?new Date(after.dueAt).getTime():after.due?new Date(after.due).getTime():op.reviewedAt;
-          repository.query(`UPDATE review_cards SET state=?,stage=?,due_at=?,algorithm_version=?,revision=revision+1,updated_at=? WHERE node_id=?`)
-            .run(op.afterState,stageOf(after),dueAt,op.algorithmVersion||'ts-fsrs/6.0.0:FSRS-7',new Date().toISOString(),nodeId);
+          const cols=syncedReviewColumns(repository,after,op.reviewedAt,dueAt);
+          repository.query(`UPDATE review_cards SET state=?,stage=?,due_at=?,day_learning=?,learning_step=?,algorithm_version=?,revision=revision+1,updated_at=? WHERE node_id=?`)
+            .run(op.afterState,cols.stage,dueAt,cols.dayLearning,cols.learningStep,op.algorithmVersion||'ts-fsrs/6.0.0:FSRS-7',Date.now(),nodeId);
           applyLeechEffect(repository,op);
           applied++;
         }else{

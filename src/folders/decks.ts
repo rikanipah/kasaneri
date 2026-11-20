@@ -1,5 +1,5 @@
 import { t } from '../core/i18n';
-import {normalizeReviewOverrides,reviewSettings,type ReviewSettings,type StudySettings} from '../core/settings';
+import {DAILY_LIMIT_KEYS,normalizeReviewOverrides,reviewSettings,type ReviewSettings,type StudySettings} from '../core/settings';
 import type {DeckConfiguration,FolderInfo} from '../core/model';
 import {Repository} from '../data/database';
 export class DeckProfiles {
@@ -15,6 +15,11 @@ export class DeckProfiles {
     if(proposed){if(proposed.overrides)this.overrides.set(proposed.folderId,proposed.overrides);else this.overrides.delete(proposed.folderId);}
     for(const id of this.folders.keys())this.resolve(id);
   }
+  private baseline(parent:ReviewSettings,overrides:Partial<ReviewSettings>|undefined):ReviewSettings {
+    const custom=Object.keys(overrides||{}).some(key=>!DAILY_LIMIT_KEYS.some(limit=>limit===key));
+    return {...(custom?this.global:parent),enableShortTerm:this.global.enableShortTerm,
+      newPerDay:parent.newPerDay,reviewPerDay:parent.reviewPerDay,readingPerDay:parent.readingPerDay};
+  }
   resolve(id:string|null):ReviewSettings {
     if(!id)return this.global;
     if(this.effective.has(id))return this.effective.get(id)!;
@@ -25,8 +30,9 @@ export class DeckProfiles {
     let base=cursor?this.effective.get(cursor)||this.global:this.global;
     for(const current of chain.reverse()){
       const overrides=this.overrides.get(current);
-      const changesModel=overrides?.fsrsVersion!==undefined&&overrides.fsrsVersion!==base.fsrsVersion;
-      base={...base,fsrsWeights:changesModel?[]:base.fsrsWeights,...overrides};
+      const baseline=this.baseline(base,overrides);
+      const changesModel=overrides?.fsrsVersion!==undefined&&overrides.fsrsVersion!==baseline.fsrsVersion;
+      base={...baseline,fsrsWeights:changesModel?[]:baseline.fsrsWeights,...overrides};
       this.effective.set(current,base);
     }
     return this.effective.get(id)||this.global;
@@ -39,7 +45,7 @@ export class DeckProfiles {
     cursor=folder.parentId?this.folders.get(folder.parentId):undefined;
     while(cursor){if(this.overrides.has(cursor.id)){from=cursor.title;break;}cursor=cursor.parentId?this.folders.get(cursor.parentId):undefined;}
     return {folderId:id,title:folder.title,path:path.join(' / '),inheritedFrom:from,overrides:this.overrides.get(id)||null,
-      inherited:this.resolve(folder.parentId),effective:this.resolve(id)};
+      inherited:this.baseline(this.resolve(folder.parentId),this.overrides.get(id)),effective:this.resolve(id)};
   }
 }
 export function profileKey(value:ReviewSettings){return JSON.stringify([value.desiredRetention,value.maximumInterval,value.enableShortTerm,value.fsrsVersion||'FSRS-7',value.fsrsWeights,value.learningSteps,value.relearningSteps]);}

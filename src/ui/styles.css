@@ -15,8 +15,8 @@
   --text-muted:#aaa;
   --text-faint:#7c7c7c;
   --text-accent:#b496ef;
+  --markdown-link:light-dark(#6741b5,#b496ef);
   --accent:#8a5cf5;
-  --code-color:#d7b87d;
   /* 字体全部对齐 Obsidian——正文/界面用 Inter（本地分发），等宽用 SFMono/Consolas 栈 */
   --font-text:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,"Microsoft YaHei UI","Noto Sans CJK SC",sans-serif;
   --font-interface:var(--font-text);
@@ -60,6 +60,8 @@ button:focus-visible,input:focus-visible {outline:2px solid var(--accent);outlin
 #action-rail button {display:flex;align-items:center;justify-content:center;width:36px;height:36px;flex:none;padding:7px;color:var(--text-muted);}
 svg.lucide {width:21px;height:21px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;}
 #action-rail button.is-active {color:var(--text-accent);background:var(--background-active);}
+/* 2026-11-17：功能栏按钮不要焦点框（Tab 走过去会像被选中） */
+#action-rail button:focus-visible {outline:none;}
 #open-settings {margin-top:auto;}
 .tree-heading {position:sticky;top:0;z-index:8;display:flex;align-items:center;gap:6px;height:38px;flex:none;padding:0 11px 0 10px;list-style:none;color:var(--text-muted);background:var(--background-secondary);font-size:12px;font-weight:600;cursor:pointer;}
 .tree-heading::-webkit-details-marker {display:none;}
@@ -74,6 +76,16 @@ details[open] > .tree-heading::after {transform:rotate(45deg);}
 .tree-heading:has(.tree-filters button[aria-pressed="true"]) .tree-filter-button {background:var(--background-active);color:var(--text-accent);}
 .tree-popup {position-area:block-end span-inline-start;position-try-fallbacks:flip-inline,flip-block;margin:4px 0 0;padding:4px;background:var(--background-secondary);color:var(--text-normal);border:1px solid var(--border);border-radius:6px;box-shadow:0 4px 12px #0004;}
 .tree-sort:popover-open {display:grid;}
+.tree-search {width:min(320px,86vw);}
+.tree-search:popover-open {display:grid;gap:4px;}
+.tree-search-input {width:100%;box-sizing:border-box;padding:4px 8px;font:12px/1.6 var(--font-text);color:var(--text-normal);background:var(--background-primary);border:1px solid var(--border);border-radius:4px;}
+.tree-search-input:focus {outline:none;border-color:var(--text-accent);}
+.tree-search-results {display:grid;gap:1px;max-height:min(320px,45vh);overflow-y:auto;}
+.tree-search-results:empty {display:none;}
+.tree-search-results button {display:flex;align-items:center;gap:6px;width:100%;padding:4px 6px;text-align:start;border-radius:4px;color:var(--text-normal);}
+.tree-search-results button:hover,.tree-search-results button.is-active {background:var(--background-active);color:var(--text-accent);}
+.tree-search-results .tree-name {overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.tree-search-empty {margin:0;padding:4px 6px;font-size:12px;color:var(--text-muted);}
 .tree-sort button {text-align:start;padding:4px 9px;}
 .tree-sort button[aria-pressed="true"] {background:var(--background-active);color:var(--text-accent);}
 .tree-filters:popover-open {display:flex;gap:5px;}
@@ -90,8 +102,9 @@ details[open] > .tree-heading::after {transform:rotate(45deg);}
 .folder-counts {display:grid;grid-template-columns:repeat(3,minmax(19px,auto));gap:4px;padding-right:5px;flex:none;font:11px/1.5 var(--font-text);font-variant-numeric:tabular-nums;text-align:right;}
 .folder-counts .is-zero {opacity:.5;}
 #tree {position:relative;flex:1;min-height:0;overflow-x:hidden;overflow-y:scroll;scrollbar-gutter:stable;overscroll-behavior:contain;padding:0 8px 10px;}
-#card-relations {grid-row:3;min-height:0;overflow-x:hidden;overflow-y:scroll;scrollbar-gutter:stable;overscroll-behavior:contain;background:var(--background-secondary);}
-.relation-panel {padding:0 8px 10px;}
+#card-relations {grid-row:3;display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden;background:var(--background-secondary);}
+#card-relations[open]::details-content {display:flex;flex:1;min-width:0;min-height:0;}
+.relation-panel {flex:1;min-width:0;min-height:0;overflow-x:hidden;overflow-y:scroll;scrollbar-gutter:stable;overscroll-behavior:contain;padding:0 8px 10px;}
 .relation-tree,.relation-tree ul {margin:0;padding:0;list-style:none;min-width:0;}
 .relation-tree ul {margin-left:12px;padding-left:7px;border-left:1px solid var(--branch);}
 .relation-tree ul > li {position:relative;}
@@ -144,20 +157,26 @@ main {grid-column:1;grid-row:2;display:flex;flex-direction:column;min-width:0;mi
 body {--workspace-right:calc(var(--sidebar-width) + 14px);}
 body.directory-collapsed,body.browser-open {--workspace-right:58px;}
 body.solo-card {--workspace-right:14px;}
+/* 2026-11-17：独立卡片窗口底栏窄，右下角按钮允许换行，避免「卡片标签 / 实时编辑」互相挤掉 */
+body.solo-card .study-right {flex-wrap:wrap;row-gap:4px;justify-content:flex-end;}
+body.solo-card .study-action {min-width:0;padding-inline:12px;}
 #notice {position:fixed;top:44px;right:var(--workspace-right);z-index:32;max-width:min(420px,60vw);
   padding:7px 12px;border-radius:8px;background:rgba(85,69,35,.96);color:#ffe3a4;border:1px solid rgba(228,168,46,.5);
   font-size:12.5px;white-space:pre-wrap;box-shadow:0 8px 24px rgba(0,0,0,.35);}
 #notice[hidden] {display:none;}
-#workspace {display:flex;flex:1;min-height:0;min-width:0;background:var(--background-primary);}
+#workspace {display:flex;flex:1;min-height:0;min-width:0;background:var(--background-primary);position:relative;}
+/* 2026-11-19：切卡时先在新图层里把编辑器建好，再一次性替换，避免工作区闪一帧空白。 */
+.workspace-stage {position:absolute;inset:0;display:flex;min-height:0;min-width:0;background:var(--background-primary);z-index:1;}
+.workspace-stage.is-committed {position:static;display:contents;background:none;z-index:auto;}
 .empty {margin:36px 40px;color:var(--text-muted);font-size:14px;}
 .material-editor {flex:1;min-height:0;min-width:0;overflow:hidden;}
 .cm-editor {height:100%;font-size:var(--text-size);color:var(--text-normal);}
 .cm-editor.cm-focused {outline:none;}
-.cm-scroller {overflow:auto;font-family:var(--font-text);line-height:1.5;padding:28px 32px 32px;overscroll-behavior:contain;}
+.cm-scroller {overflow:auto;scrollbar-gutter:stable;font-family:var(--font-text);line-height:1.5;padding:28px 32px 32px;overscroll-behavior:contain;}
 .cm-content {padding:0;caret-color:var(--text-normal)!important;}
 /* CodeMirror 运行时注入 .cm-scroller/.cm-content 的 monospace，晚于本表 → 提高特异性覆盖 */
 .cm-editor .cm-scroller,.cm-editor .cm-content,.cm-editor .cm-line {font-family:var(--font-text) !important;}
-.cm-line {padding:0;}
+.cm-editor .cm-content .cm-line {padding:0;}
 .cm-selectionBackground {background:#534369!important;}
 .cm-activeLine {background:transparent;}
 .cm-content ::selection {background:#534369;}
@@ -173,41 +192,81 @@ body.solo-card {--workspace-right:14px;}
 .card-editor .cm-scroller {padding:28px 32px 32px;}
 /* 所有文本编辑区（与 Obsidian 一致）默认 I 形光标；
    复习模式下默认箭头，只有点「编辑」进入编辑态后才变成 I 形。 */
-.cm-editor .cm-scroller,
+.cm-editor .cm-scroller {cursor:default;}
 .cm-editor .cm-content {cursor:text;}
-.card-editor .cm-editor,
-.card-editor .cm-scroller,
-.card-editor .cm-content {cursor:text;}
+.cm-editor .cm-scroller::-webkit-scrollbar,
+.cm-editor .cm-scroller::-webkit-scrollbar-track,
+.cm-editor .cm-scroller::-webkit-scrollbar-thumb {cursor:default;}
 /* 复习（检测卡）：默认箭头；只有指针真正落在文字上（编辑器自己维护的 is-over-text）才显示 I，
    与 Anki 的编辑框一致——分割条、行尾空白、上下留白都是箭头。 */
 body.study-cards-mode .card-editor .cm-editor,
 body.study-cards-mode .card-editor .cm-scroller,
 body.study-cards-mode .card-editor .cm-content {cursor:default;}
-body.study-cards-mode .card-editor .cm-editor.is-over-text .cm-scroller,
 body.study-cards-mode .card-editor .cm-editor.is-over-text .cm-content {cursor:text;}
 .card-rule {position:relative;cursor:row-resize;touch-action:none;user-select:none;z-index:3;}
 /* 高亮只留底色，不要下划线/底边线 */
 .irtree-extracted {background:rgba(228,168,46,.29);border-bottom:none;color:inherit;}
 .irtree-extracted-extract {background:rgba(78,177,117,.3);}
 .irtree-extracted-cloze {background:rgba(78,130,211,.34);}
+/* 2026-11-19：新建主题（Alt+D）在原文留下的锚点，用黄色区分 */
+.irtree-extracted-topic {background:rgba(242,214,128,.3);}
+/* 2026-11-18：锚点头尾标记（零宽，只做视觉分隔）：颜色跟所属高亮一致 */
+/* 2026-11-20：高亮边界抓手（>, >||, ^, v, 细横线）已整体撤销——高亮仍只用背景色表示 */
 #highlight-controls {display:flex;gap:6px;align-items:center;}
 #highlight-controls button {width:21px;height:21px;padding:4px;opacity:.35;}
 #highlight-controls button:before {content:'';display:block;height:13px;width:13px;border-radius:3px;background:var(--highlight-color);}
 #highlight-controls [data-highlight="extract"] {--highlight-color:#a9dbc2;}
 #highlight-controls [data-highlight="cloze"] {--highlight-color:#5684d5;}
+#highlight-controls [data-highlight="topic"] {--highlight-color:#f2d680;}
 #highlight-controls [data-highlight="all"] {--highlight-color:#eee;}
 #highlight-controls button[aria-pressed="true"] {opacity:1;}
 .study-left {gap:8px;}
-.material-editor.has-extra-answer {display:block;overflow:auto;}
+.material-editor.has-extra-answer {display:block;overflow:auto;scrollbar-gutter:stable;}
 .has-extra-answer .cm-editor {height:auto;min-height:80px;}
-.has-extra-answer .cm-scroller {overflow:visible;}
+#workspace .cm-scroller,
+#workspace .material-editor.has-extra-answer {overflow-y:scroll;}
+#workspace .has-extra-answer .cm-scroller {overflow:visible;}
+#workspace .cm-editor,
+#workspace .material-editor.has-extra-answer {container-type:size;}
+#workspace .cm-editor .cm-scroller {padding-block-end:0;}
+#workspace .cm-editor .cm-content {padding-block-end:calc(200cqh / 3);}
+#workspace .has-extra-answer .cm-editor {container-type:normal;}
+#workspace .has-extra-answer .cm-editor .cm-content {padding-block-end:0;}
+#workspace .material-editor.has-extra-answer::after {content:'';display:block;height:calc(200cqh / 3);}
 .material-extra-rule {margin:0 32px;border:0;border-top:1px solid var(--border);}
 .plain-cloze-placeholder,.plain-cloze-placeholder * {color:inherit!important;text-decoration:none!important;border:0!important;background:transparent!important;box-shadow:none!important;}
 /* 裸 `[文字]`（没有链接地址）按普通正文显示，不再着成链接色 */
 .plain-bracket-text,.plain-bracket-text * {color:inherit!important;text-decoration:none!important;}
 .reading-rich {color:inherit;}
 .reading-rich-math {display:inline-block;}
-.md-syntax-marker {color:#bb94ef;font-weight:500;}
+.reading-rich-math-block {display:block;padding:.35em .6em;min-width:0;}
+.reading-rich-math-block.md-indented-math {padding-inline-start:calc(.6em + var(--md-wrap-width));}
+.reading-rich-math-block .katex-display {margin:0;overflow-x:auto;overflow-y:hidden;}
+.reading-rich-math-block .katex-display,
+.reading-rich-math-block .katex-display>.katex {text-align:start;}
+.reading-rich-quoted-math {border-inline-start:2px solid var(--border);padding-inline:10px;}
+.reading-rich-quoted-math .katex-display,.reading-rich-quoted-math .katex-display>.katex {text-align:center;}
+.md-syntax-marker {color:var(--text-faint);font-weight:normal;}
+.md-inline-code {background:var(--background-primary-alt);border-radius:3px;}
+.md-indent-guide {position:relative;}
+.md-indented-math {--md-wrap-width:calc(var(--md-indent-size) * var(--md-space-width,.28125em));}
+.md-indent-guide::before {content:'';position:absolute;inset-inline-start:var(--md-code-inset,0px);inset-block:0;width:calc(var(--md-guide-last-column) * var(--md-space-width,.28125em) + 1px);background:repeating-linear-gradient(to right,var(--branch) 0 1px,transparent 1px calc(4 * var(--md-space-width,.28125em)));opacity:.55;pointer-events:none;}
+.cm-editor .cm-content .cm-line.md-wrap-indent {
+  --md-wrap-width:calc(var(--md-indent-size) * var(--md-space-width,.28125em));
+  padding-inline-start:calc(var(--md-code-inset,0px) + var(--md-wrap-width));
+  text-indent:calc(-1 * var(--md-wrap-width));
+}
+.cm-editor .cm-line.md-code-line.md-wrap-indent {--md-code-inset:12px;--md-space-width:.6em;}
+.md-highlight {background:color-mix(in srgb,#e9ba42 38%,transparent);}
+.md-list-bullet {position:relative;color:transparent;}
+.md-list-bullet::before {content:'•';position:absolute;inset-inline:0;text-align:center;text-indent:0;color:var(--text-muted);pointer-events:none;}
+.md-task-checkbox {width:1em;height:1em;margin:0 .15em 0 0;vertical-align:-.1em;accent-color:var(--accent);}
+.md-task-checkbox:enabled {cursor:pointer;}
+.md-task-checkbox:disabled {opacity:1;}
+.md-task-done {color:var(--text-muted);text-decoration:line-through;}
+.cm-editor .cm-line.md-quote {border-inline-start:2px solid var(--border);padding-inline-start:10px;}
+.cm-editor .cm-line.md-rule {background:linear-gradient(var(--border),var(--border)) center / 100% 1px no-repeat;}
+.cm-editor[data-editor-mode='reading'] .cm-content {cursor:text;}
 .math-source {color:var(--text-normal);font-family:var(--font-monospace);}
 .math-command {color:#78baf2;}.math-number {color:#8cc9a0;}.math-brace {color:#d8b76e;}
 .browser-filter-section>summary {cursor:pointer;color:var(--text-muted);font-size:12px;font-weight:600;padding:8px 3px;user-select:none;}
@@ -217,10 +276,11 @@ body.study-cards-mode .card-editor .cm-editor.is-over-text .cm-content {cursor:t
 .browser-deck[open]>summary:before {transform:rotate(90deg);}
 .browser-deck .browser-deck-children {margin-left:13px;border-left:1px solid var(--border);padding-left:2px;}
 #browser-filters .browser-deck>summary button {padding-left:3px;}
-#browser-filters .is-current {color:var(--text-normal);box-shadow:inset 2px 0 var(--accent);font-weight:600;}
+/* 2026-11-17：不再额外画一条竖线，牌组聚焦就用同一个蓝色方框 */
+#browser-filters .is-current {font-weight:600;}
 .reading-rich-markdown {display:block;overflow:auto;}
 .reading-rich-markdown table {border-collapse:collapse;max-width:100%;}
-.reading-rich-markdown td,.reading-rich-markdown th {padding:6px 10px;border:1px solid var(--border);}
+.reading-rich-markdown td,.reading-rich-markdown th {padding:.18em .4em;border:1px solid var(--border);}
 
 .cm-editor .cm-line.md-code-line {
   position:relative;
@@ -228,7 +288,6 @@ body.study-cards-mode .card-editor .cm-editor.is-over-text .cm-content {cursor:t
   background:var(--background-primary-alt);
   font-family:var(--font-monospace) !important;
   font-size:.875em;
-  --code-color:var(--text-normal);
 }
 .cm-editor .cm-line.md-code-line-start {
   padding-top:6px;
@@ -266,10 +325,16 @@ body.study-cards-mode .card-editor .cm-editor.is-over-text .cm-content {cursor:t
 .reading-media video {max-width:100%;max-height:460px;}
 .reading-media audio {max-width:100%;width:360px;}
 .reading-rich a {color:var(--text-accent);cursor:pointer;text-decoration:underline;}
+.md-editor-link,.cm-editor a[data-editor-link] {color:var(--markdown-link);text-decoration:underline;}
+.cm-editor [data-editor-link] {cursor:inherit;}
+.cm-editor.is-link-modifier [data-editor-link] {cursor:pointer;}
+.md-editor-link-preview::after {content:'↗';display:inline-block;vertical-align:.18em;margin-inline-start:.2em;font-size:.75em;line-height:1;}
 .external-link-mark {display:inline-block;vertical-align:.18em;margin-inline-start:.2em;font-size:.75em;line-height:1;}
 #context-menu {position:fixed;z-index:30;min-width:180px;background:#292929;border:1px solid #484848;box-shadow:0 8px 32px #0008;border-radius:7px;padding:5px;}
 #context-menu button {display:block;text-align:left;width:100%;padding:6px 10px;font-size:13px;}
 #context-menu .danger {color:#f09595;}
+/* 2026-11-19：多选批量菜单的标题行 */
+#context-menu .context-menu-title {padding:4px 10px 6px;font-size:12px;color:var(--text-muted);}
 #context-menu hr {border:0;border-top:1px solid var(--border);margin:4px;}
 dialog {border:1px solid #484848;border-radius:10px;background:#272727;color:var(--text-normal);padding:20px;width:min(440px,90vw);box-shadow:0 18px 70px #0008;}
 dialog::backdrop {background:#0007;}
@@ -318,48 +383,67 @@ dialog input {background:var(--background-primary);border:1px solid #555;border-
 .study-action:active {background:#303030;}
 .study-action.primary {min-width:84px;}
 .study-side {position:relative;display:flex;align-items:end;min-height:21px;}
-.study-right {justify-content:flex-end;}
+.study-right {justify-content:flex-end;gap:6px;}
+/* 2026-11-19：窗口窄时把这三个选项收进「更多」，避免和时间/选项挤在一起 */
+body.compact-study-tools #card-tags,
+body.compact-study-tools #editor-mode,
+body.compact-study-tools #study-priority {display:none;}
+#editor-mode {min-width:0;max-width:120px;padding-inline:8px;cursor:pointer;font-family:inherit;}
 #study-more-menu {position:absolute;right:0;bottom:38px;min-width:155px;z-index:40;padding:5px;background:var(--background-secondary);border:1px solid var(--border);border-radius:8px;box-shadow:0 5px 24px #0006;}
 #study-more-menu button {display:block;width:100%;padding:7px 10px;text-align:left;font-size:13px;}
 .study-empty {align-self:center;color:var(--text-muted);font-size:13px;}
 #card-browser {display:flex;flex-direction:column;flex:0 0 42%;min-height:185px;min-width:0;overflow:hidden;background:var(--background-primary);}
-#browser-filters {width:190px;flex:none;overflow:auto;padding:14px 9px;border-right:1px solid var(--border);background:var(--background-secondary);}
+/* 2026-11-17：浏览卡片按 Anki 的配色分层（工具区比表格亮、表头最亮、斑马行、单一蓝强调） */
+:root {--browser-chrome:#2c2c2c;--browser-row:#252525;--browser-row-alt:#2c2c2c;--browser-head:#404040;--browser-line:#454545;--browser-accent:#93c5fd;}
+body.solo-browser {background:var(--browser-chrome);}
+body.solo-browser #card-browser {background:var(--browser-chrome);}
+#browser-filters {width:190px;flex:none;overflow:auto;padding:14px 9px;border-right:1px solid var(--browser-line);background:var(--browser-chrome);}
+/* 2026-11-17：牌组列表的滚动条底色跟面板一致，不再是一条深色槽 */
+#browser-filters::-webkit-scrollbar,#browser-filters::-webkit-scrollbar-track,#browser-filters::-webkit-scrollbar-corner {background:var(--browser-chrome);}
+/* 滑块四周那圈 2px 边框原来用深色 #242424，看着像黑边，这里跟着面板走 */
+#browser-filters::-webkit-scrollbar-thumb {border-color:var(--browser-chrome);}
 #browser-filters h3 {font-size:12px;font-weight:600;color:var(--text-faint);margin:18px 8px 6px;}
 #browser-filters h3:first-child {margin-top:0;}
 #browser-filters button {display:flex;align-items:center;gap:7px;width:100%;padding:5px 9px;text-align:left;color:var(--text-muted);font-size:12px;overflow:hidden;}
 #browser-filters button span {overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 #browser-filters button svg {width:15px;height:15px;flex:none;}
-#browser-filters .is-active {background:var(--background-active);color:var(--text-normal);}
+#browser-filters .is-active {background:rgba(147,197,253,.16);color:var(--text-normal);}
 /* 卡片类型 / 学习状态可多选——选中项右侧打勾，清楚区分「已选」与「未选」。 */
 #browser-filters button[data-group="kind"][aria-pressed="true"]::after,
 #browser-filters button[data-group="status"][aria-pressed="true"]::after {content:'✓';margin-left:auto;font-size:11px;color:var(--accent);}
 /* 牌组后面的到期数（仿 Anki 的牌组计数） */
 .browser-filter-count {margin-left:auto;font-size:11px;color:var(--text-faint);}
 .browser-heading {display:flex;align-items:center;gap:12px;padding:9px 16px 5px;flex:none;}
+/* 2026-11-17：浏览卡片的计数放进窗口标题行（仿 Anki），内容区不再单占一行 */
+#browser-title {display:flex;align-items:center;gap:8px;padding:0 12px;font-size:13px;font-weight:600;color:var(--text-muted);white-space:nowrap;-webkit-app-region:drag;}
 .browser-heading h2 {font-size:14px;font-weight:600;margin:0;}
 #browser-total {font-size:12px;color:var(--text-muted);}
 #browser-close {margin-left:auto;font-size:12px;padding:4px 8px;color:var(--text-muted);}
 .browser-toolbar {display:flex;align-items:center;gap:7px;padding:5px 16px 10px;flex:none;}
-.browser-toolbar input {min-width:0;border:1px solid var(--border);border-radius:5px;padding:5px 8px;background:var(--background-primary-alt);color:var(--text-normal);font:12px/1.5 var(--font-text);}
+.browser-toolbar input {min-width:0;border:1px solid var(--browser-line);border-radius:5px;padding:5px 8px;background:var(--browser-chrome);color:var(--text-normal);font:12px/1.5 var(--font-text);}
 #browser-query {flex:1;min-width:140px;}
 /* 表格独占一个定位容器，自绘滚动条只贴在表格右缘，不会跑到窗口右上角/编辑区上 */
-#browser-table-pane {position:relative;flex:1;min-width:0;min-height:0;display:flex;flex-direction:column;}
-#browser-table-scroll {overflow:auto;flex:1;min-height:0;border-block:1px solid var(--border);scrollbar-width:none;}
+#browser-table-pane {position:relative;flex:1;min-width:320px;min-height:0;display:flex;flex-direction:column;overflow:hidden;}
+#browser-table-scroll {overflow:auto;flex:1;min-height:0;border-block:1px solid var(--browser-line);background:var(--browser-row);scrollbar-width:none;}
 /* 自绘滚动条（原生滑块几千行时被压成几像素，抓不住）；原生滚动条隐藏 */
-#browser-table-scroll::-webkit-scrollbar {width:0;height:0;}
-#browser-scrollbar {position:absolute;top:1px;right:0;bottom:1px;width:13px;background:var(--background-primary-alt);cursor:pointer;z-index:4;}
+/* 2026-11-17：编辑区拖宽后表格放不下时要能横向滚动，别再静默裁掉列 */
+#browser-table-scroll {scrollbar-width:thin;}
+#browser-table-scroll::-webkit-scrollbar {width:0;height:10px;}
+#browser-table-scroll::-webkit-scrollbar-thumb {background:rgba(255,255,255,.18);border-radius:5px;}
+#browser-table-scroll::-webkit-scrollbar-track {background:var(--browser-chrome);}
+#browser-scrollbar {position:absolute;top:1px;right:0;bottom:1px;width:13px;background:var(--browser-chrome);cursor:pointer;z-index:4;}
 #browser-scrollbar[hidden] {display:none;}
-#browser-scrollbar-thumb {position:absolute;left:2px;right:2px;top:0;min-height:64px;border-radius:6px;background:#666;}
-#browser-scrollbar-thumb:hover,#browser-scrollbar-thumb:active {background:#8a8a8a;}
+#browser-scrollbar-thumb {position:absolute;left:2px;right:2px;top:0;min-height:64px;border-radius:6px;background:rgba(255,255,255,.16);}
+#browser-scrollbar-thumb:hover,#browser-scrollbar-thumb:active {background:rgba(255,255,255,.26);}
 #browser-table {border-collapse:collapse;table-layout:fixed;width:100%;font-size:12px;}
-#browser-table th {position:sticky;top:0;z-index:1;text-align:left;font-weight:500;background:var(--background-secondary);color:var(--text-muted);border-bottom:1px solid var(--border);}
+#browser-table th {position:sticky;top:0;z-index:1;text-align:left;font-weight:500;background:var(--browser-head);color:#fcfcfc;border-bottom:1px solid var(--browser-line);}
 #browser-table th,#browser-table td {padding:6px 10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 /* 1.6 ①②：表头变成可点击排序按钮，右缘带拖拽调宽手柄。
    注意：手柄必须完全落在本列 padding 区内（right:0），不能伸进下一列——
    下一列 th 是后画的定位元素，会盖住伸出去的部分，真实鼠标就点不到了。 */
 .browser-th-sort {display:flex;align-items:center;gap:3px;width:100%;margin:0;padding:0;border:none;background:none;color:inherit;font:inherit;font-weight:inherit;text-align:left;cursor:pointer;}
 .browser-th-sort:hover {color:var(--text-normal);}
-.browser-th-sort .sort-arrow {flex:none;width:12px;font-size:10px;color:var(--text-accent);}
+.browser-th-sort .sort-arrow {flex:none;width:12px;font-size:10px;color:var(--browser-accent);}
 .browser-th-resize {position:absolute;top:0;right:0;bottom:0;width:10px;cursor:col-resize;z-index:2;touch-action:none;}
 .browser-th-resize:hover,.browser-th-resize:active {background:var(--accent);opacity:.35;}
 body.browser-resizing {cursor:col-resize;user-select:none;}
@@ -380,12 +464,14 @@ body.browser-resizing {cursor:col-resize;user-select:none;}
   background:var(--background-primary-alt);font-size:12px;color:var(--text-normal);}
 /* 1.6（用户补充）：纵列之间的淡色分隔线。只画在列与列之间（首列左侧、末列右侧不画），
    颜色取 --border 的 45% 透明度，与行分隔线同族，滚动和列宽拖动后跟随移动。 */
-#browser-table th+th,#browser-table td+td {border-left:1px solid color-mix(in srgb,var(--border) 45%,transparent);}
-#browser-table tbody tr {cursor:pointer;border-bottom:1px solid color-mix(in srgb,var(--border) 40%,transparent);height:30px;}
+/* 2026-11-17：按 Anki 加回深色格线——比行底更暗的细缝，不是亮线 */
+#browser-table th+th,#browser-table td+td,#browser-table-head th+th {border-left:1px solid rgba(0,0,0,.22);}
+#browser-table tbody tr {cursor:pointer;height:30px;background:var(--browser-row);user-select:none;}
+#browser-table tbody tr:nth-child(even) {background:var(--browser-row-alt);}
 .browser-spacer td {height:0;padding:0;border:0;pointer-events:none;}
-#browser-table tbody tr:hover {background:var(--background-hover);}
-#browser-table tbody tr.is-selected {background:var(--background-active);}
-#browser-table tbody tr:focus-visible {outline:1px solid var(--accent);outline-offset:-1px;}
+#browser-table tbody tr:hover {background:#323232;}
+#browser-table tbody tr.is-selected {background:rgba(147,197,253,.22);color:#fcfcfc;}
+#browser-table tbody tr:focus-visible {outline:1px solid var(--browser-accent);outline-offset:-1px;}
 .browser-state.state-new {color:#7eafff;}.browser-state.state-learning {color:#ed8f92;}.browser-state.state-review {color:#86c7a1;}
 .browser-state.state-empty,.browser-state.state-suspended,.browser-state.state-stopped {color:var(--text-faint);}
 .browser-conflict-badge {padding:1px 5px;border:1px solid var(--border);border-radius:5px;font-size:.85em;color:var(--text-normal);background:var(--background-secondary);}
@@ -406,7 +492,7 @@ body.browser-resizing {cursor:col-resize;user-select:none;}
 .browser-conflict-dialog section {border-top:1px solid var(--border);margin-top:12px;}
 .browser-conflict-dialog .sync-conflict-detail {overflow-wrap:anywhere;}
 #browser-table .browser-empty {padding:25px 15px;text-align:center;color:var(--text-muted);}
-.browser-footer {display:flex;align-items:center;gap:8px;flex:none;padding:6px 16px;color:var(--text-muted);font-size:12px;}
+.browser-footer {display:flex;align-items:center;gap:8px;flex:none;padding:6px 16px;color:var(--text-muted);font-size:12px;background:var(--browser-chrome);border-top:1px solid var(--browser-line);}
 .browser-footer button {padding:4px 8px;}
 #browser-page {min-width:105px;font-variant-numeric:tabular-nums;}
 #browser-enabled {margin-left:4px;}
@@ -488,17 +574,6 @@ button:disabled {cursor:default;opacity:.55;}
 .statistics-history table {border-collapse:collapse;width:100%;font-size:12px;}
 .statistics-history td,.statistics-history th {padding:7px 9px;text-align:left;border-bottom:1px solid var(--border);white-space:nowrap;}
 .statistics-history th {position:sticky;top:0;background:var(--background-secondary);}
-@media(prefers-color-scheme:light) {
-  :root[data-theme="system"] {color-scheme:light;--background-primary:#f6f8f5;--answer-background:#fafbf8;--background-primary-alt:#edf3ee;--background-secondary:#ebf4e8;--rail-background:#e4f0e1;--bar-background:#edf4f3;--background-hover:#dfeade;--folder-icon-color:#8b641d;--folder-icon-fill:#d7ad56;--background-active:#deedfc;--border:#d3dfd5;--branch:#b0bfb3;--text-normal:#202924;--text-muted:#525e56;--text-faint:#707d74;--text-accent:#235a96;--accent:#2866ad;--code-color:#9a5b00;}
-}
-:root[data-theme="light"] {color-scheme:light;--background-primary:#f6f8f5;--answer-background:#fafbf8;--background-primary-alt:#edf3ee;--background-secondary:#ebf4e8;--rail-background:#e4f0e1;--bar-background:#edf4f3;--background-hover:#dfeade;--folder-icon-color:#8b641d;--folder-icon-fill:#d7ad56;--background-active:#deedfc;--border:#d3dfd5;--branch:#b0bfb3;--text-normal:#202924;--text-muted:#525e56;--text-faint:#707d74;--text-accent:#235a96;--accent:#2866ad;--code-color:#9a5b00;}
-:root[data-theme="light"] dialog,:root[data-theme="light"] #context-menu {background:#fafafa;border-color:#ccc;}
-:root[data-theme="light"] .study-action {color:#333;background:#e7e7e7;border-color:#d8d8d8;}
-:root[data-theme="light"] .study-action:hover {background:#ddd;}
-:root[data-theme="light"] .md-syntax-marker {color:#8552af;}
-:root[data-theme="light"] .math-command {color:#236db2;}
-:root[data-theme="light"] .math-number {color:#28794e;}
-:root[data-theme="light"] .math-brace {color:#92701b;}
 @media(max-width:1000px) {.browser-hint {display:none;}.browser-toolbar {flex-wrap:wrap;}#study-buttons {gap:8px;}.study-bottom-row {gap:6px;grid-template-columns:85px minmax(0,1fr) 85px;}.study-action {min-width:68px;padding-inline:12px;}}
 /* 同步面板 */
 .sync-status {border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:10px;background:var(--background-secondary);}
@@ -529,8 +604,6 @@ button:disabled {cursor:default;opacity:.55;}
 #card-terminal .terminal-head button {margin-left:auto;font-size:12px;padding:4px 10px;}
 #card-terminal .terminal-host {flex:1;min-height:0;overflow:hidden;background:#0d0d0d;border:1px solid var(--border);border-radius:6px;padding:6px 4px;}
 #card-terminal .terminal-note {margin:0;font-size:11px;color:var(--text-faint);flex:none;}
-:root[data-theme="light"] #card-terminal {background:#f4f4f4;}
-:root[data-theme="light"] #card-terminal .terminal-host {background:#fff;}
 
 /* 优化进度条（逐牌组时为真实进度，单牌组为不确定进度） */
 .progress{height:5px;border-radius:3px;background:var(--border);overflow:hidden;margin:8px 0}
@@ -539,9 +612,8 @@ button:disabled {cursor:default;opacity:.55;}
 @keyframes progress-slide{0%{margin-left:-35%}100%{margin-left:100%}}
 /* 独立编辑窗口（?card=…）——隐藏目录树、功能栏与分隔条，只留编辑区 */
 body.solo-card {grid-template-columns:minmax(0,1fr);}
-body.solo-card #directory-pane,
-body.solo-card #resize,
-body.solo-card #action-rail {display:none !important;}
+body.solo-card #sidebar,
+body.solo-card #resize {display:none !important;}
 body.solo-card #breadcrumbs {padding-left:18px;}
 /* 浏览卡片时不再显示下方编辑区——浏览器占满内容区，双击才开新窗口编辑 */
 body.browser-open #card-browser {flex:1 1 auto;}
@@ -571,8 +643,6 @@ body.solo-add #workspace {display:block;overflow:auto;padding:14px 22px 18px;}
 .add-actions button.primary {background:var(--accent);color:#fff;}
 .add-actions button.primary:disabled {opacity:.5;cursor:not-allowed;}
 .add-hint {margin:0;font-size:11px;color:var(--text-faint);}
-:root[data-theme="light"] .add-field select,:root[data-theme="light"] #add-card-form input,
-:root[data-theme="light"] #add-card-form textarea {border-color:#ccc;background:#fff;}
 /* 统计图表的悬停提示与柱子交互（参考 Anki 的悬停读数） */
 .statistics-chart {position:relative;}
 .statistics-tooltip {position:absolute;z-index:3;pointer-events:none;padding:4px 8px;border-radius:6px;
@@ -614,6 +684,7 @@ body.solo-add #workspace {display:block;overflow:auto;padding:14px 22px 18px;}
 /* 按住 Ctrl 悬停到摘录/条目高亮时，提示"可以跳转" */
 .irtree-extracted {cursor:inherit;}
 body.ctrl-down .irtree-extracted {cursor:pointer;}
+/* 2026-11-18：光标在锚点里时跟随高亮颜色 */
 
 /* 去掉设置窗口的暗边（border / 外发光 / 背景压暗），只留轻微阴影区分层次 */
 #preferences {border:none;outline:none;box-shadow:0 18px 48px rgba(0,0,0,.35);background:var(--background-secondary);}
@@ -657,8 +728,14 @@ body.ctrl-down .irtree-extracted {cursor:pointer;}
 #preferences .setting-row {display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 0;border-bottom:1px solid var(--border);}
 #preferences .setting-row:last-child {border-bottom:none;}
 #preferences .setting-row > span {font-size:13px;color:var(--text-normal);}
+/* 2026-11-19：「FSRS 参数」那一行放的是 textarea，要按块级排；否则被上面的 flex 行挤成两行标签 */
+#preferences .setting-row.parameter-row {display:block;}
+#preferences .setting-row.parameter-row textarea {margin-top:8px;}
 #preferences .setting-row :is(input:not([type=checkbox]),select) {width:min(220px,46%);min-width:0;}
 #preferences .setting-row input[type=checkbox] {min-width:0;}
+#preferences .daily-limit-control {display:flex;align-items:center;justify-content:flex-end;gap:8px;width:min(220px,53%);}
+#preferences .daily-limit-control select {flex:1;width:auto;}
+#preferences .daily-limit-control input {width:72px;}
 #preferences .sync-key-controls {display:flex;gap:6px;align-items:center;flex-wrap:wrap;}
 #preferences .sync-key-controls input {width:min(200px,100%);}
 #preferences .preference-card:has(input[data-setting=enableShortTerm]:not(:checked)) .short-term-step {display:none;}
@@ -720,22 +797,26 @@ body.browser-open #card-state-badge {display:none;}
 .browser-due.state-suspended,.browser-due.state-stopped,.browser-due.state-empty {color:var(--text-faint);}
 /* 浏览编辑区改成「正面/背面」两个可折叠区块（仿 Anki），没有保存按钮 */
 #browser-editor {gap:8px;}
-.browser-attachment-editor {max-height:380px;min-width:0;overflow:auto;}
-.browser-attachment-editor .cm-scroller {padding:8px;}
-.browser-attachment-editor .cm-editor {font-size:inherit;}
-.browser-editor-section {border:1px solid var(--border);border-radius:6px;background:var(--background-primary);overflow:hidden;}
+.browser-attachment-editor {display:flex;flex:0 0 auto;flex-direction:column;min-width:0;min-height:56px;overflow:hidden;background:var(--background-primary);border-radius:6px;}
+.browser-attachment-editor .cm-editor,.browser-attachment-editor .cm-scroller,.browser-attachment-editor .cm-content {background:transparent;}
+.browser-attachment-editor .cm-editor {height:auto;}.browser-attachment-editor .cm-scroller {overflow:visible;}
+.browser-editor-section textarea {field-sizing:content;}
+.browser-attachment-editor .cm-scroller {padding:8px;overflow:auto;}
+.browser-attachment-editor .cm-editor {flex:1;min-height:0;font-size:inherit;}
+.browser-editor-section {border:0;background:transparent;overflow:visible;min-width:0;}
 .browser-editor-section > summary {padding:6px 10px;font-size:12px;font-weight:600;color:var(--text-muted);cursor:pointer;
-  background:var(--background-primary-alt);list-style:none;display:flex;align-items:center;gap:6px;}
+  background:transparent;list-style:none;display:flex;align-items:center;gap:6px;}
 .browser-editor-section > summary::-webkit-details-marker {display:none;}
 .browser-editor-section > summary:before {content:"▸";font-size:10px;color:var(--text-faint);}
 .browser-editor-section[open] > summary:before {content:"▾";}
-.browser-editor-section textarea {display:block;width:100%;box-sizing:border-box;border:0;background:transparent;color:var(--text-normal);
-  padding:8px 10px;font:13px/1.55 var(--font-text);resize:vertical;min-height:120px;}
+.browser-editor-section textarea {display:block;width:100%;box-sizing:border-box;border:0;border-radius:6px;background:var(--background-primary);color:var(--text-normal);min-height:56px;
+  padding:8px 10px;font:13px/1.55 var(--font-text);resize:none;min-height:3.6em;}
 .browser-editor-section textarea:focus {outline:1px solid var(--accent);outline-offset:-1px;}
 .browser-editor-head span {font-size:13px;font-weight:600;color:var(--text-normal);}
 /* 编辑区 Markdown 工具条（仿 Anki 的字段工具条，先做文本格式这一排） */
-.browser-editor-toolbar {display:flex;flex-wrap:wrap;gap:3px;padding:3px 0 1px;}
-.browser-editor-toolbar button {min-width:26px;height:24px;padding:0 6px;border:1px solid var(--border);border-radius:4px;
+/* 2026-11-17：拖窄时工具按钮不压扁，整组换行（仿 Anki） */
+.browser-editor-toolbar {display:flex;flex-wrap:wrap;align-content:flex-start;gap:3px;padding:3px 0 1px;overflow:hidden;}
+.browser-editor-toolbar button {flex:0 0 auto;min-width:26px;height:24px;padding:0 6px;border:1px solid var(--border);border-radius:4px;
   background:var(--background-primary-alt);color:var(--text-muted);font-size:12px;line-height:1;cursor:pointer;}
 .browser-editor-toolbar button:hover {color:var(--text-normal);background:var(--background-active);}
 
@@ -765,15 +846,21 @@ body.browser-open #card-state-badge {display:none;}
    中间加可拖动分隔线，编辑区宽度存 --browser-editor-width（默认 360，拖动后记忆） */
 .browser-body {display:flex;flex:1;min-height:0;min-width:0;position:relative;}
 #browser-table-scroll {flex:1;min-width:0;}
-#browser-editor {width:var(--browser-editor-width,360px);min-width:240px;max-width:72%;flex:none;border-left:1px solid var(--border);background:var(--background-secondary);
-  display:flex;flex-direction:column;gap:10px;padding:10px 12px;overflow:auto;}
+#browser-editor {width:var(--browser-editor-width,360px);min-width:260px;max-width:72%;flex:none;background:var(--background-secondary);
+  display:flex;flex-direction:column;gap:10px;padding:10px 16px 18px 12px;overflow:auto;}
 #browser-editor[hidden] {display:none;}
 #browser-editor-rule {display:none;flex:none;width:var(--split-size);cursor:col-resize;touch-action:none;}
 .browser-body:has(#browser-editor:not([hidden])) #browser-editor-rule {display:block;}
 :is(#resize,#tree-divider,.card-rule,#browser-rule,#browser-editor-rule) {position:relative;}
 :is(#resize,#tree-divider,.card-rule,#browser-rule,#browser-editor-rule)::before {content:"";position:absolute;background:var(--border);pointer-events:none;}
 :is(#resize,#browser-editor-rule)::before {inset-block:0;inset-inline-start:50%;width:1px;}
+/* 2026-11-17：工作区↔右侧栏的分隔线贴住右侧面板，线右边不再留黑缝 */
+#resize::before {inset-inline-start:calc(100% - 2px);width:2px;}
 :is(#tree-divider,.card-rule,#browser-rule)::before {inset-inline:0;inset-block-start:50%;height:1px;}
+/* 2026-11-17：题目/答案之间、两棵树之间的分隔线加粗到 2px */
+:is(#tree-divider,.card-rule)::before {inset-block-start:calc(50% - 1px);height:2px;}
+/* 2026-11-17：浏览卡片表格↔编辑区：整条拖动带就是分隔线，颜色与编辑区一致，不夹黑缝、没有第二条线 */
+#browser-editor-rule::before {inset-inline-start:0;width:100%;background:var(--background-secondary);}
 :is(#resize,#tree-divider,.card-rule,#browser-rule,#browser-editor-rule):is(:hover,:active,:focus-visible,.is-dragging)::before {background:var(--accent);}
 .browser-editor-head {display:flex;align-items:center;gap:8px;}
 .browser-editor-head span {flex:1;font-size:13px;font-weight:600;color:var(--text-normal);}
@@ -823,13 +910,26 @@ body.browser-open #card-state-badge {display:none;}
 .sync-topbar button {border:1px solid var(--border);background:var(--background-primary-alt);color:var(--text-normal);border-radius:6px;padding:5px 12px;font-size:12.5px;cursor:pointer;}
 .sync-topbar button.primary {background:var(--accent);color:#fff;border-color:transparent;}
 .sync-conflict-detail {font-size:11.5px;color:var(--text-muted);white-space:pre-wrap;margin:4px 0 8px 14px;}
+.sync-settings-conflicts {display:flex;flex-direction:column;gap:8px;}
+.sync-setting-conflict {border:1px solid var(--border);border-radius:8px;padding:10px 12px;background:var(--background-secondary);display:flex;flex-direction:column;gap:6px;}
+.sync-setting-conflict-head {display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:12.5px;}
+.sync-setting-conflict-values {display:flex;flex-direction:column;gap:2px;font-size:12px;color:var(--text-normal);overflow-wrap:anywhere;}
+.sync-setting-conflict-actions {display:flex;gap:8px;margin-top:2px;}
+.sync-setting-conflict-actions button {border:1px solid var(--border);background:var(--background-primary-alt);color:var(--text-normal);border-radius:6px;padding:4px 10px;font-size:12px;cursor:pointer;}
+.sync-setting-conflict-actions button.primary {background:var(--accent);color:#fff;border-color:transparent;}
 
 /* 滚动条照 Qt/Anki 的样式——有独立凹槽、滑块是方角窄条，不是浮在内容上的圆药丸 */
 *::-webkit-scrollbar {width:12px;height:12px;background:var(--background-primary-alt);}
 *::-webkit-scrollbar-track {background:var(--background-primary-alt);}
-*::-webkit-scrollbar-thumb {background:#666;border-radius:5px;border:2px solid var(--background-primary-alt);}
-*::-webkit-scrollbar-thumb:hover,*::-webkit-scrollbar-thumb:active {background:#8a8a8a;}
+*::-webkit-scrollbar-thumb {background:rgba(255,255,255,.16);border-radius:5px;border:2px solid var(--background-primary-alt);}
+*::-webkit-scrollbar-thumb:hover,*::-webkit-scrollbar-thumb:active {background:rgba(255,255,255,.26);}
 *::-webkit-scrollbar-corner {background:var(--background-primary-alt);}
+:is(#tree,.relation-panel,#workspace .cm-scroller,#workspace .has-extra-answer)::-webkit-scrollbar,
+:is(#tree,.relation-panel,#workspace .cm-scroller,#workspace .has-extra-answer)::-webkit-scrollbar-track,
+:is(#tree,.relation-panel,#workspace .cm-scroller,#workspace .has-extra-answer)::-webkit-scrollbar-corner {background:transparent;}
+:is(#tree,.relation-panel,#workspace .cm-scroller,#workspace .has-extra-answer)::-webkit-scrollbar-thumb {
+  border-color:transparent;background-clip:padding-box;
+}
 #browser-table-scroll::-webkit-scrollbar {width:13px;height:13px;}
 /* 重来目标小菜单（浮在「重来」按钮上方） */
 .again-menu {position:fixed;z-index:60;min-width:260px;max-width:420px;max-height:50vh;overflow:auto;padding:10px 12px;
@@ -848,12 +948,12 @@ body.browser-open #card-state-badge {display:none;}
 body.browser-dragging #browser-table {visibility:hidden;}
 body.browser-dragging #browser-scrollbar {visibility:hidden;}
 /* 虚拟表格——固定表头一张表，表体用 canvas 撑高度、绝对定位只画可视行 */
-#browser-table-head {width:100%;table-layout:fixed;border-collapse:collapse;flex:none;background:var(--background-secondary);}
-#browser-table-head th {text-align:left;font-weight:500;color:var(--text-muted);border-bottom:1px solid var(--border);position:relative;}
+#browser-table-head {width:100%;max-width:100%;table-layout:fixed;border-collapse:collapse;flex:none;background:var(--browser-head);}
+#browser-table-head th {text-align:left;font-weight:500;color:#fcfcfc;border-bottom:1px solid #323232;position:relative;}
 #browser-table-canvas {position:relative;width:100%;}
 #browser-table {position:absolute;left:0;right:0;top:0;width:100%;table-layout:fixed;border-collapse:collapse;}
 #browser-table tbody tr {content-visibility:visible;}
-/* 卡片属性（标签）面板 */
+/* 卡片标签（标签）面板 */
 #card-tags {position:relative;}
 #card-tags-panel {position:absolute;right:0;bottom:44px;width:240px;padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--background-secondary);box-shadow:0 10px 30px #0008;z-index:60;}
 #card-tags-panel[hidden] {display:none;}
@@ -864,63 +964,40 @@ body.browser-dragging #browser-scrollbar {visibility:hidden;}
 .card-tag button:hover {color:var(--text-normal);}
 #card-tags-input {width:100%;border:1px solid var(--border);border-radius:5px;padding:5px 8px;background:var(--background-primary-alt);color:var(--text-normal);font:12px/1.5 var(--font-text);}
 /* 浏览卡片表头/表格外观收拾一下——表头有高度、只有横向分隔线、悬停/选中行更清楚 */
-#browser-table-head th {height:32px;padding:0 10px;font-weight:500;font-size:12px;color:var(--text-muted);border:0;border-bottom:1px solid var(--border);background:var(--background-secondary);white-space:nowrap;}
+#browser-table-head th {height:32px;padding:0 10px;font-weight:500;font-size:12px;color:#fcfcfc;border:0;border-bottom:1px solid #323232;background:var(--browser-head);white-space:nowrap;}
 #browser-table-head th:hover {color:var(--text-normal);}
 #browser-table-head .browser-th-sort {opacity:.85;}
-#browser-table td {padding:0 10px;border:0;border-bottom:1px solid #ffffff0d;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+#browser-table td {padding:0 10px;border:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 #browser-table tbody tr {height:30px;}
-#browser-table tbody tr:hover td {background:#ffffff06;}
-#browser-table tbody tr.is-selected td,#browser-table tbody tr[aria-selected="true"] td {background:var(--background-active);}
+/* 2026-11-17：按 Anki 的斑马纹，不再给单元格加底色 */
+#browser-table tbody tr.is-selected td,#browser-table tbody tr[aria-selected="true"] td {background:rgba(147,197,253,.22);color:#fcfcfc;}
 #browser-table td.browser-state,#browser-table td.browser-due {font-variant-numeric:tabular-nums;}
 /* 编辑区顶部标题改成可直接编辑的输入框，外观仍像标题 */
-#browser-editor-title {width:100%;border:0;background:transparent;color:var(--text-normal);font:600 15px/1.5 var(--font-text);padding:2px 0;}
+#browser-editor-title {display:block;width:100%;box-sizing:border-box;border:0;border-radius:6px;background:var(--background-primary);color:var(--text-normal);font:600 15px/1.5 var(--font-text);padding:8px 10px;resize:none;overflow:hidden;min-height:36px;max-height:180px;overflow-y:auto;white-space:pre-wrap;overflow-wrap:anywhere;}
 #browser-editor-title:focus {outline:1px solid var(--border);border-radius:4px;background:var(--background-primary-alt);}
 /* 编辑区分区布局——标题/工具条固定，正面与背面平分剩余高度；去掉底部文字注解 */
-#browser-editor {display:grid;grid-template-rows:auto auto minmax(0,1fr) minmax(0,1fr);gap:8px;}
+/* 2026-11-17：正/背面改成按内容高度收敛——收起的小节只占标题行，展开的固定一屏高度、内部滚动 */
+#browser-editor {display:flex;flex-direction:column;align-content:start;gap:8px;overflow:auto;}
 #browser-editor-back[hidden] {display:none;}
-.browser-editor-section {display:flex;flex-direction:column;min-height:0;}
+/* 2026-11-17：仿 Anki，正面上面压一条深线与上方工具条分开 */
+#browser-editor-title-section > summary {border-top:1px solid #323232;}
+/* 2026-11-17：没有背面的卡片（主题/提取）让正面占满剩余高度 */
+#browser-editor.no-back {flex:0 0 auto;min-height:0;}
+#browser-editor.no-back #browser-editor-front {flex:0 0 auto;min-height:240px;}
+#browser-editor.no-back #browser-editor-front::details-content {flex:0 0 auto;min-height:200px;}
+.browser-editor-section {display:flex;flex-direction:column;min-height:0;flex:0 0 auto;}
+/* 2026-11-17：标题固定一行；正/背面默认五五分，内容变长时自己长高，长到没地方才出滚动条 */
+#browser-editor-title-section {flex:0 0 auto;}#browser-editor-title-section > :last-child {min-height:0;}
+#browser-editor-title-section::details-content {resize:none;}
+#browser-editor-front,#browser-editor-back {flex:0 0 auto;}
+.browser-editor-section::details-content {display:flex;flex:0 0 auto;flex-direction:column;min-height:0;overflow:visible;resize:none;}
 .browser-editor-section > summary {flex:none;}
-.browser-editor-section > textarea {flex:1;min-height:0;resize:none;}
+.browser-editor-section > textarea {flex:0 0 auto;min-height:0;resize:none;}
 #browser-editor-hint {display:none;}/* 浅色主题按 Obsidian/Anki 的观感重调并补齐组件配色 */
-:root[data-theme="light"] dialog,:root[data-theme="light"] #context-menu {background:#fff;border-color:var(--border);box-shadow:0 18px 44px #0000001f;}
-:root[data-theme="light"] ::-webkit-scrollbar {background:#eceef1;}
-:root[data-theme="light"] ::-webkit-scrollbar-thumb {background:#c2c7cf;border-color:#eceef1;}
-:root[data-theme="light"] ::-webkit-scrollbar-thumb:hover {background:#a9b0ba;}
-:root[data-theme="light"] #action-rail button {color:#5a6169;}
-:root[data-theme="light"] #action-rail button:hover {background:#e6e8ec;}
-:root[data-theme="light"] #browser-table-head th {background:#eef0f3;}
-:root[data-theme="light"] #browser-table tbody tr:hover td {background:#f1f3f6;}
-:root[data-theme="light"] #browser-table tbody tr.is-selected td,:root[data-theme="light"] #browser-table tbody tr[aria-selected="true"] td {background:#e7e1f6;}
-:root[data-theme="light"] .browser-editor-section {background:#fff;}
-:root[data-theme="light"] .study-action {color:#333;background:#e7e9ec;border-color:#d8dade;}
-:root[data-theme="light"] .study-action:hover {background:#dfe2e6;}
-:root[data-theme="light"] .media-play {background:#fff;border:1px solid #dcdde1;color:#222;}
-:root[data-theme="light"] .card-tag {background:#f2f3f5;border-color:var(--border);}
 /* 外观页的自定义样式输入框 */
 .preference-css {width:100%;min-height:96px;resize:vertical;border:1px solid var(--border);border-radius:6px;padding:8px;background:var(--background-primary-alt);color:var(--text-normal);font:12px/1.5 var(--font-monospace);}
 /* 浅色主题对照 Obsidian Light 再收一遍外壳——顶栏/侧栏/树/底栏/输入框 */
-:root[data-theme="light"] #topbar {border-bottom-color:#e7e7e7;}
-:root[data-theme="light"] #topbar button {color:#4a4f57;}
-:root[data-theme="light"] #breadcrumbs button,:root[data-theme="light"] #breadcrumbs .current {color:#2b2f36;}
-:root[data-theme="light"] .tree-label {color:#33373d;}
-:root[data-theme="light"] .tree-row.is-selected,:root[data-theme="light"] .tree-row[aria-selected="true"] {background:#e4e4e6;}
-:root[data-theme="light"] #study-controls {border-top-color:#e7e7e7;}
-:root[data-theme="light"] input,:root[data-theme="light"] textarea,:root[data-theme="light"] select {background:#fff;color:#222428;border-color:#dcdde1;}
-:root[data-theme="light"] button {color:#33373d;}
-:root[data-theme="light"] .browser-toolbar input,:root[data-theme="light"] .browser-editor-section textarea {background:#fff;}
-:root[data-theme="light"] .browser-footer {background:#f7f7f7;border-top:1px solid #e7e7e7;}
-/* 右上角短暂提示（待办暂停 / leech） */
-.card-notice-flash {position:fixed;top:44px;right:18px;z-index:80;padding:8px 14px;border-radius:8px;
+/* 短暂提示（待办暂停 / leech）；2026-11-17 改到工作区左下角，避免压住目录树标题 */
+.card-notice-flash {position:fixed;left:18px;bottom:128px;z-index:80;padding:8px 14px;border-radius:8px;
   background:var(--background-secondary);border:1px solid var(--border);color:var(--text-normal);
   box-shadow:0 10px 26px #0006;font-size:13px;pointer-events:none;animation:card-notice-in .18s ease-out;}
-@keyframes card-notice-in {from{opacity:0;transform:translateY(-6px);}to{opacity:1;transform:none;}}
-/* 垃圾桶——类型徽标、行分隔、内容预览 */
-.trash-kind {flex:none;padding:1px 6px;border-radius:4px;font-size:11px;border:1px solid var(--border);color:var(--text-muted);background:var(--background-primary-alt);}
-.trash-kind-folder {color:#c9a227;border-color:#c9a22755;}
-.trash-kind-topic {color:#6aa9ff;border-color:#6aa9ff55;}
-.trash-kind-material {color:#7ec97e;border-color:#7ec97e55;}
-.trash-kind-cloze {color:#c98ad6;border-color:#c98ad655;}
-.trash-item {border-bottom:1px solid var(--border);padding:10px 4px;}
-.trash-item:last-child {border-bottom:0;}
-.trash-item-full {margin:8px 0 0;padding:10px;max-height:38vh;overflow:auto;white-space:pre-wrap;word-break:break-word;
-  background:var(--background-primary-alt);border:1px solid var(--border);border-radius:6px;font:12px/1.6 var(--font-monospace);color:var(--text-normal);}

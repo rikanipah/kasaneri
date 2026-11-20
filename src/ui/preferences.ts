@@ -1,8 +1,30 @@
 import {contextMenuPreferences} from './context-menu-settings';
 import { getLocale, parseLocale, t } from '../core/i18n';
-import {COMMANDS,REVIEW_KEYS,shortcutFromEvent,type Shortcuts,type StudySettings,type ReviewSettings} from '../core/settings';
+import {COMMANDS,DAILY_LIMIT_KEYS,REVIEW_KEYS,shortcutFromEvent,type DailyLimit,type DailyLimitKey,type Shortcuts,type StudySettings,type ReviewSettings} from '../core/settings';
 import type {TreeNode,DeckConfiguration,OptimizeResult} from '../core/model';
+import type {SettingsConflict} from '../settings/sync';
 import {icon,type IconName} from './icons';
+
+const SYNC_SETTING_LABELS:Record<string,string>={
+  desiredRetention:'目标记忆率',maximumInterval:'最长复习间隔（天）',enableShortTerm:'启用短期学习步骤',
+  fsrsVersion:'FSRS 模型',fsrsWeights:'FSRS 参数',learningSteps:'初学间隔',relearningSteps:'重学间隔',
+  leechThreshold:'记忆难点（leech）阈值',leechAction:'记忆难点（leech）处理',
+  buryNew:'搁置新的关联卡片到次日',buryReview:'搁置待复习的关联卡片到次日',buryLearning:'搁置跨日学习中的关联卡片到次日',
+  masteryReps:'先修卡连续几次「良好」才解锁',newPerDay:'每天最多新卡',reviewPerDay:'每天最多复习',readingPerDay:'每天最多待办',
+  dayStartHour:'新的一天从几点开始',readingInitialDays:'首次阅读间隔（天）',readingLaterDays:'「稍后」固定延期（天）',
+  defaultPriority:'默认优先级（1 高，9 低）',priorityRatio:'高低优先级的待办权重比',learnAheadMinutes:'学习提前限制（分钟，0 关闭）',
+  newReviewOrder:'新学/复习的先后顺序',newOrder:'新卡片插入位置',reviewOrder:'复习卡片排列顺序',
+  newCardsIgnoreReviewLimit:'新卡不受复习上限影响',newCardGatherOrder:'新卡收集顺序',
+  learningStepFuzz:'学习步抖动',directoryDispersion:'按目录分散出卡',loadBalance:'启用负载均衡',
+  reviewFuzz:'复习间隔抖动',interdayLearningMix:'跨日学习与复习的混合',
+  fsrsPerCycle:'每轮复习卡片数',readingPerCycle:'每轮待办卡片数',studyMode:'复习模式',
+};
+function formatSyncedSettingValue(value:unknown):string{
+  if(value===null)return t('不限');
+  if(typeof value==='boolean')return value?t('开启'):t('关闭');
+  if(Array.isArray(value))return value.length?value.join(', '):t('（默认）');
+  return String(value);
+}
 const formatBytes=(value:number)=>value>=1024*1024?(Math.round(value/1024/1024*10)/10)+' MB':value>=1024?Math.round(value/1024)+' KB':value+' B';
 async function openAttachmentManager():Promise<void>{
  const existing=document.querySelector<HTMLDialogElement>('#attachment-manager');if(existing){existing.remove();return;}
@@ -127,11 +149,12 @@ export class PreferencesDialog {
   private pendingWeights:number[]|null=null;
   private optimizeBusy=false;
   // 同步设置（独立于复习设置草稿，改动即时生效并落盘）
-  private syncDraft={enabled:false,port:38641,peers:[] as Array<{name:string;address:string}>};
+  private syncDraft={enabled:true,startEnabled:true,port:38641,peers:[] as Array<{name:string;address:string}>};
   private syncHasPassphrase=false;
   // 本机设备名（用于对端按名字区分）
   private syncName='';
   private syncState:Awaited<ReturnType<typeof window.reading.syncStatus>>|null=null;
+  private settingsConflicts:SettingsConflict[]=[];
   private viewVersion=0;
   // 窗口位置（left/top，px），拖动后记在本机
   private position={x:0,y:0};
@@ -200,7 +223,7 @@ export class PreferencesDialog {
       [t('选项'),'',['appearance','general','review','reading','files','sync','backup','trash']],
       [t('其它'),'',['shortcuts','contextMenu','help']],
     ];
-    const LABELS:{[key in PreferenceTab]:string}={appearance:t('外观'),general:t('常规'),review:t(this.deck?'复习设置':'默认复习'),reading:t(this.deck?'待办设置':'默认待办'),files:t('文件管理'),sync:t('同步'),backup:t('备份'),trash:t('垃圾桶'),shortcuts:t('快捷键'),contextMenu:t('右键菜单'),help:t('帮助')};
+    const LABELS:{[key in PreferenceTab]:string}={appearance:t('外观'),general:t('常规'),review:t(this.deck?'复习设置':'默认复习'),reading:t(this.deck?'待办设置':'默认待办'),files:t('文件管理'),sync:t('同步'),backup:t('备份'),trash:t('垃圾桶'),shortcuts:t('快捷键'),contextMenu:t('右键菜单'),help:t('帮助与说明')};
     const title=document.createElement('h3');title.textContent=this.deck?t('设置')+' · '+this.deck.title:t('设置');
     const nav=document.createElement('nav');nav.className='preference-nav';
     const search=document.createElement('input');search.type='search';search.placeholder=t('搜索设置…');search.className='preference-search';
@@ -263,7 +286,7 @@ export class PreferencesDialog {
     });
     let currentCard:HTMLElement|null=null;
     if(!this.deck&&this.tab==='shortcuts'){
-      body.append(preferenceHint(t('点击输入框后按下组合键。复习评分键只在对应卡片中生效，文字编辑时保留正常输入。')));
+      body.append(preferenceHint(t('点击输入框后按下组合键。复习评价键只在对应卡片中生效，文字编辑时保留正常输入。')));
       for(const command of COMMANDS){
         const row=document.createElement('label');row.className='shortcut-row';
         const name=document.createElement('span');name.textContent=t(command.name);
@@ -301,11 +324,31 @@ export class PreferencesDialog {
         input.addEventListener('change',()=>{void commit();if(key==='enableShortTerm')this.render();});
         row.append(text,input);(currentCard||body).append(row);
       };
+      const limitField=(label:string,key:DailyLimitKey)=>{
+        const row=document.createElement('div');row.className='setting-row';
+        const text=document.createElement('span');text.textContent=label;
+        const control=document.createElement('span');control.className='daily-limit-control';
+        const mode=document.createElement('select');mode.dataset.dailyLimit=key;mode.setAttribute('aria-label',label);
+        if(this.deck){
+          const inherited=this.deck.inherited[key];
+          mode.add(new Option(t('继承（{0}）',inherited===null?t('不限'):inherited),'inherit'));
+        }
+        mode.add(new Option(t('不限'),'unlimited'));
+        mode.add(new Option(t('指定张数'),'count'));
+        const value=this.deck?this.deck.overrides?.[key]:this.draft.settings[key];
+        mode.value=value===undefined?'inherit':value===null?'unlimited':'count';
+        const count=document.createElement('input');count.dataset.dailyLimitCount='';count.type='number';
+        count.min='0';count.max='10000';count.step='1';count.required=true;
+        count.value=String(value??0);count.hidden=mode.value!=='count';count.setAttribute('aria-label',t('{0} · 张数',label));
+        mode.onchange=()=>{count.hidden=mode.value!=='count';if(!count.hidden)count.focus();void commit();};
+        count.onchange=()=>void commit();
+        control.append(mode,count);row.append(text,control);(currentCard||body).append(row);
+      };
       const hint=(text:string)=>(currentCard||body).append(preferenceHint(text));
       if(this.deck&&this.tab==='review'){
         // 不显示「继承上级设置/继承来源」这一层关系——默认值就是默认的，
         // 牌组自己改过的参数按改过的算（保存时也只写改过的键）。
-        hint(t('牌组：{0}。没改过的参数用默认值；改过的按这个牌组的设置算。',this.deck.path));
+        hint(t('牌组：{0}。自定义复习参数后，未单独设定的参数使用全局默认值。',this.deck.path));
       }
       // 牌组还在继承时不显示任何参数（默认值就是默认值，改过才需要看见）
       if(this.deck&&this.tab==='general'){
@@ -313,6 +356,8 @@ export class PreferencesDialog {
         hint(t('文件夹路径 · {0}',this.deck.path));
       }else if(this.deck&&this.tab==='reading'){
         const group=section(t('待办设置'));
+        limitField(t('每天最多待办'),'readingPerDay');
+        hint(t('0 张不出卡。子牌组仍受各级父牌组的剩余额度限制。'));
         const row=document.createElement('label');row.className='setting-row';
         const label=document.createElement('span');label.textContent=t('待办优先级');
         const select=document.createElement('select');select.id='node-priority';
@@ -337,28 +382,37 @@ export class PreferencesDialog {
           const input=document.createElement('input');input.dataset.memory=key;input.setAttribute('aria-label',label);
           // 学习/重学步骤只在启用短期学习步骤时生效，关闭时置灰而不是隐藏（位置固定，便于对照 Anki）
           input.disabled=(!!this.deck&&this.inherit)||!profile.enableShortTerm;
-          input.value=(profile[key]||[]).map(step=>{const match=step.match(/^([\d.]+)([smhd])$/)!;return Number(match[1])*({s:1/60,m:1,h:60,d:1440}[match[2] as 's'|'m'|'h'|'d']);}).join(' ');
-          input.placeholder=t('例如：1 10（分钟，空格分隔）');
+          input.value=(profile[key]||[]).join(' ');
+          input.placeholder=t('例如：1m 10m（可写 s/m/h/d）');
           row.append(text,input);(currentCard||body).append(row);
         };
         section(t('新卡片'));
-        stepField(t('初学间隔（分钟）'),'learningSteps');
+        stepField(t('初学间隔'),'learningSteps');
         if(!this.deck){
           field(t('新卡片插入位置'),'newOrder','select',[['position',t('顺序插入（旧卡片在前）')],['random',t('随机排列')]]);
           hint(t('初学间隔里每一步到点后会再出现，走完才转成复习卡。'));
         }
         section(t('每日上限'));
-        field(t('每天最多新卡'),'newPerDay','number',undefined,[0,10000,1]);
-        field(t('每天最多复习'),'reviewPerDay','number',undefined,[0,10000,1]);
+        limitField(t('每天最多新卡'),'newPerDay');
+        limitField(t('每天最多复习'),'reviewPerDay');
         if(!this.deck){
           field(t('新的一天从几点开始'),'dayStartHour','number',undefined,[0,23,1]);
           hint(t('「新的一天」默认凌晨 4 点：每日上限从这里重新计数，搁置也是挪到下一个这个时间点。'));
-          hint(t('0 表示不限。只限制新卡与复习的条数，学习中/重学的卡片不占额度；按本机当天零点起算。'));
-        }else hint(t('0 表示不限；按这个牌组（含子牌组）当天已做的数量计算。'));
+          hint(t('0 张不出新卡或复习卡。已进入短期学习或重学的卡片不占用这两种额度。'));
+        }else hint(t('0 张不出卡。子牌组仍受各级父牌组的剩余额度限制。'));
         section(t('遗忘'));
-        stepField(t('重学间隔（分钟）'),'relearningSteps');
+        stepField(t('重学间隔'),'relearningSteps');
+        // 2026-11-18：对应 Anki 的 Learn ahead limit——学习中的卡在到期前 N 分钟内可以直接学
+        field(t('学习提前限制（分钟，0 关闭）'),'learnAheadMinutes','number',undefined,[0,1440,1]);
+        field(t('新卡不受复习上限影响'),'newCardsIgnoreReviewLimit','checkbox');
+        field(t('新卡收集顺序'),'newCardGatherOrder','select',[['position',t('按位置（默认）')],['deck',t('按目录')],['deckThenRandom',t('按目录，组内当天随机')],['lowest',t('位置最前的先')],['highest',t('位置最后的先')],['random',t('随机（当天稳定）')]]);
+        field(t('按目录分散出卡'),'directoryDispersion','checkbox');
+        field(t('仅今日追加新卡额度'),'todayExtraNew','number',undefined,[0,9999,1]);
+        field(t('仅今日追加复习额度'),'todayExtraReview','number',undefined,[0,9999,1]);
+        field(t('跨日学习与复习的混合'),'interdayLearningMix','select',[['mixed',t('与复习混合（默认）')],['after',t('复习之后')],['before',t('复习之前')]]);
+        hint(t('学习中（红色）的卡片在到期前这么多分钟内可以直接学，默认 20 分钟；填 0 表示必须等到点。'))
         field(t('记忆难点（leech）阈值'),'leechThreshold','number',undefined,[0,1000000,1]);
-        field(t('记忆难点（leech）处理'),'leechAction','select',[['suspend',t('暂停卡片')],['tag',t('只加 leech 标签')]]);
+        field(t('记忆难点（leech）处理'),'leechAction','select',[['suspend',t('暂停卡片并添加 leech 标签')],['tag',t('只加 leech 标签')]]);
         field(t('搁置新的关联卡片到次日'),'buryNew','checkbox');
         field(t('搁置待复习的关联卡片到次日'),'buryReview','checkbox');
         field(t('搁置跨日学习中的关联卡片到次日'),'buryLearning','checkbox');
@@ -366,23 +420,37 @@ export class PreferencesDialog {
         // 先修解锁条件（全局与各牌组都能调）
         section(t('先修解锁'));
         field(t('先修卡连续几次「良好」才解锁'),'masteryReps','number',undefined,[1,9,1]);
-        hint(t('默认 4：先修卡最近连续 4 次评分都达到「良好/简单」才解锁依赖卡；设为 1 就退回原来的「最近一次良好」。中间有一次「困难/重来」会重新累计。'));
+        hint(t('默认 4：先修卡最近连续 4 次评价都达到「良好/简单」才解锁依赖卡；设为 1 就退回原来的「最近一次良好」。中间有一次「困难/重来」会重新累计。'));
         if(!this.deck){
           hint(t('忘记次数达到阈值就按上面的方式处理；阈值 0 表示不判定。默认 4 次。'));
           section(t('展示顺序'));
           field(t('新学/复习的先后顺序'),'newReviewOrder','select',[['mixed',t('学新与复习混合（默认）')],['newFirst',t('新卡先出')],['reviewFirst',t('复习先出')]]);
-          field(t('复习卡片排列顺序'),'reviewOrder','select',[['forgetting',t('最容易忘的先（默认）')],['due',t('按到期日期')],['random',t('随机排列卡片')]]);
+          field(t('复习卡片排列顺序'),'reviewOrder','select',[
+            ['forgetting',t('最容易忘的先（默认）')],['relative',t('相对超期（已过天数/计划间隔）')],
+            ['intervals',t('按间隔（短的先）')],['intervalsDesc',t('按间隔（长的先）')],
+            ['ease',t('按难度（难的先）')],['easeDesc',t('按难度（易的先）')],
+            ['retrievability',t('按可提取度（低的先）')],['retrievabilityDesc',t('按可提取度（高的先）')],
+            ['due',t('按到期日期')],['dueThenDeck',t('按到期日期，再按目录')],['deckThenDue',t('按目录，再按到期日期')],
+            ['added',t('按添加顺序（旧的先）')],['addedDesc',t('按添加顺序（新的先）')],
+            ['random',t('随机排列卡片')]]);
           hint(t('学习/重学的卡片永远排在最前；「按到期日期」只影响复习卡的先后。'));
         }
         const reviewGroup=section('FSRS');
         if(!this.deck)hint(t('牌组默认使用这里的参数。可右键文件夹单独调整。'));
-        field(t('FSRS 模型'),'fsrsVersion','select',[['FSRS-7','FSRS-7'],['FSRS-6',t('FSRS-6（兼容 Anki 已导入参数）')]]);
+        field(t('FSRS 模型'),'fsrsVersion','select',[['FSRS-6',t('FSRS-6（默认，与 Anki 一致）')],['FSRS-7',t('FSRS-7（实验性，默认权重未冻结）')]]);
         field(t('目标记忆率'),'desiredRetention','number',undefined,[.7,.99,.01]);
         field(t('最长复习间隔（天）'),'maximumInterval','number',undefined,[1,36500,1]);
         field(t('启用短期学习步骤'),'enableShortTerm','checkbox');
+        if(this.deck)hint(t('此开关只影响当前牌组。未单独设置时使用全局默认值。'));
         hint(t('默认启用：新卡按「初学间隔」按分钟再出现，走完才转成复习卡；关闭后新卡第一次回答就直接转成复习卡。关闭不会重置已有记忆状态。'));
         field(t('更改参数后重新计算到期日'),'rescheduleOnChange','checkbox');
         hint(t('Anki 的「更改时将卡片重新排程」。打开后，保存 FSRS 参数会按新参数重算复习卡的到期日（不改记忆状态）；默认关闭。'));
+        // 2026-11-19：Anki 的负载均衡（load balancer）。窗口就是 fuzz 区间，按到期量加权挑一天。
+        if(!this.deck){
+          section(t('负载均衡'));
+          field(t('启用负载均衡'),'loadBalance','checkbox');
+          hint(t('复习卡的下次到期日会在 fuzz 区间内按「到期量少」加权挑一天，把未来每天的到期量摊平；间隔超过 90 天的卡片不参与。这只影响下次到期日，不改变今天已到期的卡和今天的出卡顺序。'));
+        }
         const weightsRow=document.createElement('label');weightsRow.className='setting-row parameter-row';
         if(this.deck&&this.inherit)weightsRow.hidden=true;
         const weightsText=document.createElement('span');weightsText.textContent=t('FSRS 参数');
@@ -424,7 +492,7 @@ export class PreferencesDialog {
               this.optimizeResult=await window.reading.request<OptimizeResult>('optimizeDeck',{
                 folderId:this.deck?this.deck.folderId:null,modelVersion:profile2.fsrsVersion,enableShortTerm:profile2.enableShortTerm,
                 currentWeights:profile2.fsrsWeights?.length?profile2.fsrsWeights:null,evaluate:false});
-              this.optimizeNote=t('输入 {0} 张卡、{1} 条评分，生成 {2} 个训练样本。耗时 {3} 秒。点「填入优化参数」应用结果。',this.optimizeResult.cardCount,this.optimizeResult.reviewCount,this.optimizeResult.trainingItemCount,(this.optimizeResult.durationMs/1000).toFixed(1));
+              this.optimizeNote=t('输入 {0} 张卡、{1} 条评价，生成 {2} 个训练样本。耗时 {3} 秒。点「填入优化参数」应用结果。',this.optimizeResult.cardCount,this.optimizeResult.reviewCount,this.optimizeResult.trainingItemCount,(this.optimizeResult.durationMs/1000).toFixed(1));
             }catch(reason){this.optimizeNote=reason instanceof Error?reason.message:String(reason);}
           }finally{if(timer)clearInterval(timer);this.optimizeBusy=false;hideProgress();this.render();}
         })();
@@ -438,6 +506,7 @@ export class PreferencesDialog {
               const pct=(row:any)=>row.total?(row.rate*100).toFixed(1)+'%（'+row.pass+'/'+row.total+'）':'—';
               const lines=[t('总通过率：{0}',pct(report.overall))]
                 .concat([t('欠熟练（难度>5）：{0}',pct(report.byDifficulty.hard)),t('已熟练（难度≤5）：{0}',pct(report.byDifficulty.easy))])
+                .concat(report.byInterval?[t('年轻卡（间隔<21 天）：{0}',pct(report.byInterval.young)),t('成熟卡（间隔≥21 天）：{0}',pct(report.byInterval.mature))]:[])
                 .concat(report.periods.map((row:any)=>row.label+'：'+pct(row)));
               this.optimizeNote=t('记忆保留率（只计间隔≥1天的复习，{0} ms）——{1}',report.durationMs,lines.join('；'));
             }catch(reason){this.optimizeNote=reason instanceof Error?reason.message:String(reason);}
@@ -459,7 +528,7 @@ export class PreferencesDialog {
           optimizeStatus.textContent=t('正在模拟未来 30 天…');
           try{
             const report=await window.reading.request<{cards:number;days:number;historyCount:number;results:{retention:number;total:number;peak:number}[]}>('simulateWorkload',{folderId:this.deck?.folderId});
-            const ratings=report.historyCount?t('按 {0} 条历史评分的比例抽样',report.historyCount):t('暂无历史，按每次答「良好」估算');
+            const ratings=report.historyCount?t('按 {0} 条历史评价的比例抽样',report.historyCount):t('暂无历史，按每次答「良好」估算');
             optimizeStatus.textContent=t('{0} 张卡 · {1}。沿用首次到期日，每天处理到期卡，忽略分钟步骤。{2}',report.cards,ratings,report.results.map(row=>
               t('{0}% 平均 {1} 次/日，峰值 {2}',Math.round(row.retention*100),(row.total/report.days).toFixed(1),row.peak)).join(t('；')));
           }catch(error){optimizeStatus.textContent=String(error);}
@@ -521,8 +590,8 @@ export class PreferencesDialog {
       }else if(this.tab==='appearance'){
         // 外观单独一页——主题、字号等影响界面观感的设置都放这里
         section(t('主题'));
-        field(t('颜色主题'),'theme','select',[['dark',t('深色（默认）')],['light',t('浅色')],['system',t('跟随系统')]]);
-        hint(t('深色是默认主题；选「跟随系统」时会随 Windows 的浅色/深色自动切换。'));
+        // 2026-11-20：浅色主题已归档到 archive/theme-light/，这里只留深色，不再提供切换
+        hint(t('界面固定深色主题（浅色主题已归档）。'));
         section(t('文字'));
         field(t('正文字号'),'fontSize','number',undefined,[10,48,1]);
         hint(t('工作区正文与卡片内容的字号（10–48px）。Ctrl+滚轮也能临时缩放。'));
@@ -605,7 +674,8 @@ export class PreferencesDialog {
         dataRow.append(exportButton,importButton,ankiButton,dataNote);dataGroup.append(dataRow);
         hint(t('快照包含 data\\library\\ 的全部内容（资料库 + 附件），可拷贝到 Windows/Linux 另一台机器后用「导入快照」恢复；导入会先备份当前资料库再替换。'));
       }else if(this.tab==='reading'){
-        hint(t('独立于检测卡复习。从全部文件夹的主题与提取中，按到期时间、优先级和来源分散进入待办队列；允许积压，不自动延后。'));
+        limitField(t('每天最多待办'),'readingPerDay');
+        hint(t('读完、稍后和完成各占一张额度，置于末尾不占额度。每日额度在设置的日切时间重置。'));
         field(t('首次阅读间隔（天）'),'readingInitialDays','number',undefined,[.001,3650,.1]);
         field(t('「稍后」固定延期（天）'),'readingLaterDays','number',undefined,[0,36500,1]);
         hint(t('填 0 时沿用间隔增长。填正数时按固定天数延期，保留原阅读间隔和次数。'));
@@ -624,11 +694,9 @@ export class PreferencesDialog {
         if(!this.syncState){hint(t('读取同步设置失败，点击「同步」重试。'));}
         else{
           const initialSync=this.syncState;
-          const banner=document.createElement('p');
-          banner.className='sync-feedback error';banner.setAttribute('role','alert');banner.hidden=true;
-          const renderStatus=(state:any,errorOnly=false)=>{
-            banner.hidden=!state.status.error;
-            if(banner.textContent!==state.status.error)banner.textContent=state.status.error;
+          const renderStatus=(state:typeof initialSync)=>{
+            this.syncState=state;
+            syncToggle.textContent=state.config.enabled?t('停止同步'):t('继续同步');
             const lines=document.createDocumentFragment();
             const row=(label:string,value:string,cls='')=>{const line=document.createElement('div');line.className='sync-status-line '+cls;
               const name=document.createElement('span');name.className='sync-status-label';name.textContent=label;
@@ -636,15 +704,12 @@ export class PreferencesDialog {
               line.append(name,val);lines.append(line);};
             // 旧版/把"同步到底有没有在跑"讲清楚
             if(state.status.running){row(t('进度'),t('正在同步…'),'info');}
-            if(state.status.error){row(t('同步出错'),state.status.error,'error');}
-            else if(errorOnly){status.replaceChildren(lines);return;}
             const ago=(time:number)=>{if(!time)return '—';const seconds=Math.max(0,Math.round((Date.now()-time)/1000));
               if(seconds<60)return t('{0} 秒前',seconds);if(seconds<3600)return t('{0} 分钟前',Math.round(seconds/60));return t('{0} 小时前',Math.round(seconds/3600));};
             const enabled=!!state.config.enabled;
             const peers:any[]=state.config.peers||[];
-            const healthy=!!state.status.lastOk&&!state.status.error;
-            const connection=state.status.error?t('有对端同步失败'):healthy?t('同步正常'):t('等待首次成功同步');
-            row(t('状态'),enabled?(peers.length?t('● 已开启 · {0}',connection):t('● 已开启 · 但没有对端')):t('○ 已关闭'),enabled&&peers.length&&healthy?'ok':'');
+            const connected=enabled&&!!state.status.connected;
+            row(t('状态'),enabled?(connected?t('已连接'):t('未连接')):t('已停止同步'),connected?'ok':'');
             row(t('上次成功'),state.status.lastOk?new Date(state.status.lastOk).toLocaleTimeString(getLocale())+'（'+ago(state.status.lastOk)+'）':t('还没有成功同步过'));
             if(enabled&&peers.length){
               row(t('上次检查'),state.status.lastCheck?ago(state.status.lastCheck):t('尚未检查'));
@@ -653,6 +718,7 @@ export class PreferencesDialog {
             row(t('本机 ID'),state.deviceId.slice(0,8)+'…');
             row(t('对端'),peers.length?peers.map((peer:any)=>peer.name===peer.address?peer.name:peer.name+'（'+peer.address+'）').join('、'):t('未添加'));
             row(t('累计'),t('拉取 {0} 条 · 推送 {1} 条',state.status.pulled,state.status.pushed));
+            if(state.settingsConflicts)row(t('设置冲突'),t('{0} 项待选择',state.settingsConflicts),'error');
             const logsAll:any[]=state.status.logs||[];
             for(const peer of peers){
               const last=logsAll.find((entry:any)=>entry.peer===peer.name||entry.peer===peer.address);
@@ -687,47 +753,114 @@ export class PreferencesDialog {
             status.replaceChildren(lines);
           };
           const status=document.createElement('div');status.className='sync-status';
+          const conflictHost=document.createElement('div');conflictHost.className='sync-settings-conflicts';
+          let conflictSection:HTMLElement|null=null;
+          const renderSettingsConflicts=(items:SettingsConflict[])=>{
+            this.settingsConflicts=items;
+            if(conflictSection)conflictSection.hidden=!items.length;
+            if(!items.length){conflictHost.replaceChildren();return;}
+            const fragment=document.createDocumentFragment();
+            const intro=preferenceHint(t('以下全局默认设置在两端同时被改成了不同值，请选择保留哪一端（选择后会同步给对端）：'));
+            fragment.append(intro);
+            for(const item of items){
+              const card=document.createElement('div');card.className='sync-setting-conflict';card.dataset.settingKey=item.key;
+              const header=document.createElement('div');header.className='sync-setting-conflict-head';
+              const title=document.createElement('strong');title.textContent=t(SYNC_SETTING_LABELS[item.key]||item.key);
+              const meta=document.createElement('span');meta.className='preference-hint';
+              meta.textContent=item.peer?t('来自 {0}',item.peer):'';
+              header.append(title,meta);
+              const values=document.createElement('div');values.className='sync-setting-conflict-values';
+              const localLine=document.createElement('div');localLine.className='sync-setting-conflict-side';
+              const localTime=item.local.updatedAt>1?'（'+new Date(item.local.updatedAt).toLocaleString(getLocale())+'）':'';
+              localLine.textContent=t('本机：{0}{1}',formatSyncedSettingValue(item.local.value),localTime);
+              const remoteLine=document.createElement('div');remoteLine.className='sync-setting-conflict-side';
+              const remoteTime=item.remote.updatedAt>1?'（'+new Date(item.remote.updatedAt).toLocaleString(getLocale())+'）':'';
+              remoteLine.textContent=t('对端：{0}{1}',formatSyncedSettingValue(item.remote.value),remoteTime);
+              values.append(localLine,remoteLine);
+              const actions=document.createElement('div');actions.className='sync-setting-conflict-actions';
+              const keepLocal=document.createElement('button');keepLocal.type='button';keepLocal.textContent=t('保留本机');
+              const useRemote=document.createElement('button');useRemote.type='button';useRemote.className='primary';useRemote.textContent=t('采用对端');
+              const resolve=async(choice:'local'|'remote')=>{
+                keepLocal.disabled=true;useRemote.disabled=true;
+                try{
+                  await window.reading.syncResolveSettingsConflict(item.key,choice);
+                  const latest=await window.reading.request<Configuration>('configGet');
+                  this.draft=structuredClone(latest);
+                  const [nextState,nextConflicts]=await Promise.all([window.reading.syncStatus(),window.reading.syncSettingsConflicts()]);
+                  renderStatus(nextState);
+                  renderSettingsConflicts(nextConflicts);
+                }catch(reason){
+                  const err=preferenceHint(reason instanceof Error?reason.message:String(reason));
+                  err.classList.add('error');
+                  card.append(err);
+                  keepLocal.disabled=false;useRemote.disabled=false;
+                }
+              };
+              keepLocal.onclick=()=>void resolve('local');
+              useRemote.onclick=()=>void resolve('remote');
+              actions.append(keepLocal,useRemote);
+              card.append(header,values,actions);
+              fragment.append(card);
+            }
+            conflictHost.replaceChildren(fragment);
+          };
           // 同步页打开时每 3 秒刷新一次，倒计时与状态是活的
-          const refresh=async()=>{try{renderStatus(await window.reading.syncStatus());}catch{}};
+          const refresh=async()=>{
+            try{
+              const [nextState,nextConflicts]=await Promise.all([window.reading.syncStatus(),window.reading.syncSettingsConflicts()]);
+              renderStatus(nextState);
+              renderSettingsConflicts(nextConflicts);
+            }catch{}
+          };
           const timer=setInterval(()=>{if(!document.body.contains(status)){clearInterval(timer);return;}void refresh();},3000);
-          const apply=async(changes:{passphrase?:string;name?:string}={})=>{
+          const apply=async(changes:Partial<typeof this.syncDraft>&{passphrase?:string;name?:string}={})=>{
             try{
               const state=await window.reading.syncConfigure({...this.syncDraft,...changes});
-              this.syncState=state;this.syncHasPassphrase=Boolean(state.hasPassphrase);this.syncName=state.deviceName||'';
+              this.syncDraft=state.config;
+              this.syncHasPassphrase=Boolean(state.hasPassphrase);this.syncName=state.deviceName||'';
               renderKeyStatus();renderStatus(state);renderAddresses(state);
               return true;
             }catch(reason){
               status.replaceChildren();const err=document.createElement('div');err.className='sync-status-line error';err.textContent=reason instanceof Error?reason.message:String(reason);status.append(err);
             }
           };
-          // 顶部工具条——立即同步 / 冲突文件
           const topBar=document.createElement('div');topBar.className='sync-topbar';
-          const syncNowTop=document.createElement('button');syncNowTop.type='button';syncNowTop.textContent=t('立即同步');syncNowTop.className='primary';
+          const syncToggle=document.createElement('button');syncToggle.type='button';syncToggle.className='primary';
+          const fullSyncButton=document.createElement('button');fullSyncButton.type='button';fullSyncButton.textContent=t('全量同步内容');
           const conflictsButton=document.createElement('button');conflictsButton.type='button';conflictsButton.textContent=t('打开冲突文件');
-          const manualResult=document.createElement('p');
-          manualResult.className='sync-feedback';manualResult.setAttribute('role','status');manualResult.hidden=true;
-          topBar.append(syncNowTop,conflictsButton);body.append(topBar,banner,manualResult);
-          // 写清同步范围和限制（自动同步已取消，只保留「立即同步」）。
+          topBar.append(syncToggle,fullSyncButton,conflictsButton);body.append(topBar);
+          const fullSyncHint=preferenceHint('');fullSyncHint.hidden=true;
+          body.append(fullSyncHint);
           const syncNotes=document.createElement('div');syncNotes.className='preference-hint';
           syncNotes.append(
-            t('同步会交换复习/阅读记录和卡片内容（正文、标题、附件、增删）。两边都改过的卡片会进入「冲突文件」，可以逐张选择或删除。'),
+            t('同步会交换复习/阅读记录、卡片内容（正文、标题、附件、增删）和全局默认复习/待办设置（牌组单独覆盖留在本机）。两边都改过的项目会保留双方值供手动选择。'),
             document.createElement('br'),
-            t('只走局域网明文 HTTP + HMAC，请在可信网络使用；两端时钟相差超过 2 分钟会被拒绝，请先校准系统时间。'),
+            t('使用可信局域网或 Tailscale 连接。两端时钟须保持一致。'),
           );
           body.append(syncNotes);
+          conflictSection=section(t('设置冲突'));
+          conflictSection.append(conflictHost);
+          renderSettingsConflicts(this.settingsConflicts);
           conflictsButton.onclick=()=>{this.dialog.close();this.openConflicts();};
-          syncNowTop.onclick=async()=>{
-            syncNowTop.disabled=true;syncNowTop.textContent=t('同步中…');
-            manualResult.hidden=false;manualResult.textContent=t('同步中…');
+          fullSyncButton.onclick=async()=>{
+            fullSyncButton.disabled=true;
+            fullSyncHint.hidden=false;
+            fullSyncHint.textContent=t('正在扫描并同步全部卡片内容…');
             try{
-              const state=await window.reading.syncNow();
-              renderStatus(state);
-              const cycle=state.status.lastCycle;
-              if(!state.config.enabled)manualResult.textContent=t('请先启用同步。');
-              else if(!state.config.peers.length)manualResult.textContent=t('请先添加对端设备。');
-              else if(cycle)manualResult.textContent=t('{0} · 拉取 {1} 条 · 推送 {2} 条 · {3} 秒',cycle.failed?t('有 {0} 台设备同步失败',cycle.failed):t('同步完成'),cycle.pulled,cycle.pushed,(cycle.ms/1000).toFixed(1));
-            }catch(reason){manualResult.textContent=reason instanceof Error?reason.message:String(reason);}
-            finally{syncNowTop.disabled=false;syncNowTop.textContent=t('立即同步');}
+              const next=await window.reading.syncFullContent();
+              renderStatus(next);
+              const captured=next.prepared?.captured??0;
+              fullSyncHint.textContent=captured
+                ?t('已补建 {0} 张卡片的内容版本并完成一轮同步。',captured)
+                :t('全部卡片内容均已有版本记录，已完成一轮同步。');
+            }catch(reason){
+              fullSyncHint.textContent=reason instanceof Error?reason.message:String(reason);
+            }finally{fullSyncButton.disabled=false;}
+          };
+          syncToggle.onclick=async()=>{
+            syncToggle.disabled=true;
+            try{await apply({enabled:!this.syncState?.config.enabled});}
+            finally{syncToggle.disabled=false;}
           };
 
           const statusGroup=section(t('状态'));statusGroup.append(status);renderStatus(initialSync);
@@ -754,9 +887,13 @@ export class PreferencesDialog {
           renderAddresses(initialSync);
           const connection=section(t('连接'));
           const enableRow=document.createElement('label');enableRow.className='setting-row';
-          const enableText=document.createElement('span');enableText.textContent=t('启用同步');
-          const enable=document.createElement('input');enable.type='checkbox';enable.checked=this.syncDraft.enabled;
-          enable.onchange=()=>{this.syncDraft.enabled=enable.checked;void apply();};
+          const enableText=document.createElement('span');enableText.textContent=t('启动时默认开启同步');
+          const enable=document.createElement('input');enable.type='checkbox';enable.checked=this.syncDraft.startEnabled;
+          enable.onchange=async()=>{
+            enable.disabled=true;
+            try{if(!await apply({startEnabled:enable.checked}))enable.checked=this.syncDraft.startEnabled;}
+            finally{enable.disabled=false;}
+          };
           enableRow.append(enableText,enable);connection.append(enableRow);
           const portRow=document.createElement('label');portRow.className='setting-row';
           const portText=document.createElement('span');portText.textContent=t('监听端口');
@@ -809,7 +946,7 @@ export class PreferencesDialog {
           const nameInput=document.createElement('input');nameInput.placeholder=t('设备名（如：笔记本）');nameInput.setAttribute('aria-label',t('对端设备名'));
           add.onclick=()=>{const value=peerInput.value.trim();if(!value)return;const name=nameInput.value.trim()||value;this.syncDraft.peers.push({name,address:value});void apply().then(saved=>{if(saved&&this.tab==='sync'&&this.dialog.open)this.render();});};
           addRow.append(nameInput,peerInput,add);peers.append(addRow);
-          hint(t('两台设备使用同一口令，并互相添加对端地址。开启后每 60 秒自动同步，也可以点「立即同步」。'));
+          hint(t('两台设备使用同一口令并互相添加对端地址。开启后每 60 秒静默同步。'));
         }
       }else if(this.tab==='backup'){
         // ===== 自动备份（定时把快照导出到指定文件夹）=====
@@ -866,7 +1003,8 @@ export class PreferencesDialog {
           +t('「保留份数」= 备份文件夹里最多留几份快照，超出时自动删最旧的；只删带 manifest.json 的快照目录，同文件夹里的其他内容不动。填 0 表示不清理。'));
       }else if(this.tab==='files'){
         // ===== 文件管理——新建主题的默认落点 =====
-        hint(t('用快捷键 Alt+F 新建主题时，会直接创建在下面选定的「默认文件夹」里；选「跟随当前选中」则用目录树里选中的文件夹。'));
+        // §13.3：Alt+F 入口已并入 Alt+D；无聚焦无选区时落到这里选定的默认文件夹
+        hint(t('用快捷键 Alt+D 新建主题、且没有选中卡片时，会直接创建在下面选定的「默认文件夹」里；选「跟随当前选中」则用目录树里选中的文件夹。'));
         const select=document.createElement('select');select.setAttribute('aria-label',t('默认文件夹'));
         const none=document.createElement('option');none.value='';none.textContent=t('跟随当前选中');select.append(none);
         const row=document.createElement('label');row.className='setting-row';const label=document.createElement('span');label.textContent=t('新建主题的默认文件夹');
@@ -911,17 +1049,21 @@ export class PreferencesDialog {
         const GUIDE:Array<{title:string;children:Array<{title:string;texts:string[]}>}>=[
   {title:t('一、常用操作'),children:[
     {title:t('复习检测卡'),texts:[
-      t('空格显示答案，再按 1/2/3/4 评分：1 重来、2 困难、3 良好、4 简单。'),
-      t('提示条上的时间是「按这个评分，下次什么时候回来」。'),
+      t('空格显示答案，再按 1/2/3/4 评价：1 重来、2 困难、3 良好、4 简单。'),
+      t('提示条上的时间是「按这个评价，下次什么时候回来」。'),
       t('底部「更多⌄」里有搁置、待办暂停、留存判定、撤销上次、浏览卡片。'),
       t('Ctrl+Z 撤销上一次操作，排程、日志、附件引用一起回滚。')]},
     {title:t('读待办材料'),texts:[
-      t('空格读完（间隔按增长因子变大）、2 稍后（更短间隔再推）、1 置于末尾（本轮再来一次）、0 完成（不再推送）。'),
-      t('右下角「加入复习」把材料里的检测卡送回复习队列。'),
-      t('读的时候随时能改正文、摘录、生成子卡；Alt+E 也能直接进编辑。')]},
+      t('平时只读，和复习一样：按 Alt+E（或左下角「编辑」）进入编辑，再按一次退出编辑。'),
+      t('未进入编辑时快捷键生效：1 读完（间隔按增长因子变大）、2 稍后（更短间隔再推）、3 置于末尾（本轮再来一次）、4 完成（不再推送）、5 加入复习（检测卡）。'),
+      t('进入编辑后按键就是打字，不再触发快捷键。'),
+      t('读的时候随时能改正文、摘录、生成子卡。')]},
     {title:t('编辑与摘录'),texts:[
       t('正文和答案自动保存，标题点一下就能改，失焦或回车生效。'),
-      t('Alt+A 摘录为提取、Alt+S 选区生成检测卡、Alt+D 新建提取、Alt+F 新建主题；建完留在当前卡，不会跳走。'),
+      t('Alt+A 摘录（绿色高亮）、Alt+S 检测卡（蓝色高亮）、Alt+D 新建主题（黄色高亮）：在待办队列中须先按 Alt+E 进入编辑态后才生效。'),
+      t('挂接规则：目录树有聚焦项时，新卡作为聚焦项的子级生成（聚焦检测卡 → 生成子检测卡）；目录树无聚焦时，有选区则挂在选区所在卡片下面，既无聚焦也无选区时落到默认文件夹。'),
+      t('跳转规则：Alt+D 有聚焦或有选区时建完留在当前卡片继续读；无聚焦且无选区落到默认文件夹时（以及右键菜单新建主题）会直接跳到新主题。'),
+      t('新建检测卡默认先进待办，写完题目与答案后在待办中按 5「加入复习」（或在菜单启用复习）即可进入 FSRS 复习队列。'),
       t('图片、音频、视频直接拖入或粘贴；显示宽度按卡片保存。')]},
     {title:t('目录树与记忆树'),texts:[
       t('目录树：单击只选中聚焦，双击有子项的文件夹或卡片展开一级，再双击收起；行左侧 +／− 也能收展。'),
@@ -935,27 +1077,35 @@ export class PreferencesDialog {
       t('Ctrl 多选、Shift 连选，底部可批量停止/恢复、移动、查看信息；双击一行在独立窗口编辑。')]},
     {title:t('入口在哪'),texts:[
       t('最右一列图标：目录树、复习、待办、浏览卡片、添加卡片、统计、垃圾桶、快捷键、设置。'),
-      t('工作区底部左侧是高亮开关与「编辑」，中间是队列按钮，右侧是「卡片属性」和「更多⌄」。'),
+      t('工作区是目录树和记忆树以外、左侧可编辑文本的区域。检测卡上方是编辑区，下方是答案区。'),
+      t('工作区底部左侧是高亮开关与「编辑」，中间是队列按钮，右侧是「卡片标签」和「更多⌄」。'),
       t('所有命令都能改键，见设置→快捷键；右键菜单的项目可在设置→右键菜单里排序或隐藏。')]}]},
   {title:t('二、名词解释'),children:[
     {title:t('三种卡片'),texts:[
-      t('主题（topic）：一篇材料，比如教材的一节，可以再套子主题。'),
-      t('提取（extract）：从主题里摘出来的一段，可以接着读、再摘、再生成检测卡。'),
+      t('主题卡、提取卡和检测卡统称为卡片。'),
+      t('主题卡（topic）：一篇材料，比如教材的一节，可以再套子主题。'),
+      t('提取卡（extract）：从主题里摘出来的一段，可以接着读、再摘、再生成检测卡。'),
       t('检测卡（cloze）：正文里有 [...] 挖空的卡片，走 FSRS 复习；没写答案或没挖空算「未完成」，不进队列。')]},
     {title:t('两个队列'),texts:[
       t('复习队列：只有检测卡，按 FSRS 安排下一次复习。'),
       t('待办队列：主题与提取按到期日、优先级推送，读的时候可以改内容，等于边读边优化材料。'),
       t('两者共享同一份内容，排程互不影响。')]},
+    {title:t('负载均衡'),texts:[
+      t('FSRS 只回答「下次隔几天」，不管那天已经排了多少张。同一天学的一批卡间隔相近，就会一起到期：可能某天 300 张、某天 12 张，忙的做不完、闲的没卡做。'),
+      t('负载均衡在理想间隔周围的容差窗口里挑一天（基础 ±1 天，再按间隔加 15% / 10% / 5%），到期卡少的那天权重大，从而把未来每天的到期量摊平。'),
+      t('它只改「排到哪一天」，不改记忆模型；挪动幅度永远在容差之内，今天已经到期的卡和今天的队列都不受影响。间隔超过 90 天的卡不参与。'),
+      t('例：30 张同一天到期的卡，关闭时全部挤在第 14 天；开启后摊到第 14–16 天，间隔更长时能摊到 5–6 天。'),
+      t('设置 → 复习 → 负载均衡 可以关掉；关掉后只剩每张卡各自的随机抖动（±1 天加 15% / 10% / 5%）。')]},
     {title:t('四种「停」'),texts:[
-      t('待办暂停：检测卡退出复习、留在待办里被反复推送优化；点「加入复习」回去时评分清零，当新卡重新计分，历史保留。'),
+      t('待办暂停：检测卡退出复习、留在待办里被反复推送优化；点「加入复习」回去时评价清零，当新卡重新计分，历史保留。'),
       t('留存判定：打上这个状态后复习和待办都不推送，相当于暂存点，之后在浏览卡片里决定留下还是删掉。'),
       t('搁置：只把到期日推到下一个日切点，明天自己回来（快捷键 =）。'),
       t('已完成：在待办里点了「完成」，内容保留但不再推送。')]},
     {title:t('leech（难记）'),texts:[
       t('同一张卡连续重来达到阈值（默认 4 次）就自动变成待办暂停，并打上 leech 标签。'),
       t('回到复习时整套记忆状态清零、当新卡重新计分，标签和复习记录都保留，所以下一轮又从 4 次开始。'),
-      t('标签后面带累计重来次数，比如 leech(6)，一眼能看出循环了几轮；撤销掉的评分不算。'),
-      t('标签只会在手动删除、撤销那次触发它的评分、或同步覆盖时消失。')]},
+      t('标签后面带累计重来次数，比如 leech(6)，一眼能看出循环了几轮；撤销掉的评价不算。'),
+      t('标签只会在手动删除、撤销那次触发它的评价、或同步覆盖时消失。')]},
     {title:t('先修卡'),texts:[
       t('记忆树里的检测子卡是父卡的先修。每张先修卡最近连续 N 次达到「良好」或「简单」，父卡才解锁（N 默认 4，设置→复习里改）。'),
       t('在卡片信息里可以添加或忽略先修。解锁后的卡片按自己的到期日进入队列。')]},
@@ -995,19 +1145,32 @@ export class PreferencesDialog {
     commit=async()=>{
       try{
         this.collect();
+        const limits=this.collectLimits();
         if(this.deck){
-          if(this.tab==='reading'&&this.node){
-            await this.applyPriority(this.node,this.priority===''?null:Number(this.priority));
-            error.hidden=true;
-            return;
+          const previous=this.deck,reviewTab=this.tab==='review';
+          if(this.tab==='reading'&&this.node)await this.applyPriority(this.node,this.priority===''?null:Number(this.priority));
+          if(!reviewTab&&this.tab!=='reading')return;
+          const inherited=previous.inherited as Record<string,unknown>,effective=previous.effective as Record<string,unknown>;
+          const overrides:Record<string,unknown>={...previous.overrides};
+          if(reviewTab)for(const key of REVIEW_KEYS){
+            if(DAILY_LIMIT_KEYS.some(limit=>limit===key))continue;
+            if(Object.hasOwn(overrides,key)||JSON.stringify(effective[key])!==JSON.stringify(inherited[key]))overrides[key]=effective[key];
           }
-          if(this.tab!=='review')return;
-          const inherited=this.deck.inherited as Record<string,unknown>,effective=this.deck.effective as Record<string,unknown>;
-          const overrides:Record<string,unknown>={};
-          for(const key of REVIEW_KEYS)if(JSON.stringify(effective[key])!==JSON.stringify(inherited[key]))overrides[key]=effective[key];
-          await this.applyDeck(this.deck.folderId,Object.keys(overrides).length?overrides as Partial<ReviewSettings>:null);
+          for(const [key,value] of Object.entries(limits)){
+            if(value===undefined)delete overrides[key];
+            else overrides[key]=value;
+          }
+          if(JSON.stringify(overrides)!==JSON.stringify(previous.overrides??{})){
+            const result=await this.applyDeck(previous.folderId,Object.keys(overrides).length?overrides as Partial<ReviewSettings>:null);
+            if(this.deck===previous){
+              this.deck=result;
+              if(reviewTab&&REVIEW_KEYS.some(key=>!DAILY_LIMIT_KEYS.some(limit=>limit===key)&&JSON.stringify(result.effective[key])!==JSON.stringify(effective[key])))this.render();
+            }
+          }
+        }else{
+          Object.assign(this.draft.settings,limits);
+          this.draft=await this.apply(this.draft,this.tab==='reading'?this.node:null,this.priority===''?null:Number(this.priority));
         }
-        else this.draft=await this.apply(this.draft,this.tab==='reading'?this.node:null,this.priority===''?null:Number(this.priority));
         error.hidden=true;
       }catch(reason){error.textContent=reason instanceof Error?reason.message:String(reason);error.hidden=false;}
     };
@@ -1016,13 +1179,24 @@ export class PreferencesDialog {
   }
   private async loadSync(version:number){
     // 只显示是否已配置口令，具体口令留在主进程。
-    try{const state=await window.reading.syncStatus();
+    try{const [state,conflicts]=await Promise.all([window.reading.syncStatus(),window.reading.syncSettingsConflicts().catch(()=>[] as SettingsConflict[])]);
       if(version!==this.viewVersion)return;
       this.syncState=state;
-      this.syncDraft={enabled:state.config.enabled,port:state.config.port,peers:(state.config.peers||[]).map((peer:any)=>typeof peer==='string'?{name:peer,address:peer}:{name:peer.name||peer.address,address:peer.address})};
+      this.settingsConflicts=conflicts;
+      this.syncDraft={enabled:state.config.enabled,startEnabled:state.config.startEnabled,port:state.config.port,peers:(state.config.peers||[]).map((peer:any)=>typeof peer==='string'?{name:peer,address:peer}:{name:peer.name||peer.address,address:peer.address})};
         this.syncHasPassphrase=Boolean(state.hasPassphrase);
         this.syncName=state.deviceName||'';
     }catch{if(version===this.viewVersion)this.syncState=null;}
+  }
+  private collectLimits():Partial<Record<DailyLimitKey,DailyLimit|undefined>>{
+    const limits:Partial<Record<DailyLimitKey,DailyLimit|undefined>>={};
+    for(const mode of this.content.querySelectorAll<HTMLSelectElement>('[data-daily-limit]')){
+      const key=mode.dataset.dailyLimit as DailyLimitKey;
+      const input=mode.parentElement!.querySelector<HTMLInputElement>('[data-daily-limit-count]')!;
+      if(mode.value==='count'&&!input.checkValidity())throw Error(t('每日上限请输入 0 到 10000 之间的整数。'));
+      limits[key]=mode.value==='inherit'?undefined:mode.value==='unlimited'?null:input.valueAsNumber;
+    }
+    return limits;
   }
   private collect(){
     for(const element of this.content.querySelectorAll<HTMLInputElement|HTMLSelectElement>('[data-setting]')){
@@ -1032,8 +1206,17 @@ export class PreferencesDialog {
     }
     for(const element of this.content.querySelectorAll<HTMLInputElement|HTMLTextAreaElement>('[data-memory]')){
       if(element.disabled)continue;const key=element.dataset.memory as 'learningSteps'|'relearningSteps'|'fsrsWeights';
-      const values=element.value.trim().replace(/[\[\]]/g,'').split(/[\s,，]+/).filter(Boolean).map(Number);
-      const target=this.deck?this.deck.effective:this.draft.settings;(target as any)[key]=key==='fsrsWeights'?values:values.map(value=>value+'m');
+      const target=this.deck?this.deck.effective:this.draft.settings;
+      if(key==='fsrsWeights'){
+        const values=element.value.trim().replace(/[\[\]]/g,'').split(/[\s,，]+/).filter(Boolean).map(Number);
+        (target as any)[key]=values;
+        continue;
+      }
+      // 2026-11-18：按 Anki 的写法解析，支持 1m / 10m / 30s / 1h / 1d；只写数字则按分钟
+      const steps=element.value.trim().replace(/[\[\]]/g,'').split(/[\s,，]+/).filter(Boolean)
+        .map(token=>{const match=token.match(/^([\d.]+)([smhd])?$/i);if(!match)return null;
+          return match[1]+(match[2]?match[2].toLowerCase():'m');}).filter((step):step is string=>!!step);
+      (target as any)[key]=steps;
     }
     const select=this.content.querySelector<HTMLSelectElement>('#node-priority');if(select)this.priority=select.value;
   }

@@ -3,7 +3,8 @@ import { createHash } from 'node:crypto';
 import { existsSync, copyFileSync, mkdirSync, readdirSync, readFileSync, realpathSync, openSync, readSync, closeSync, fstatSync } from 'node:fs';
 import { basename, extname, join, relative, resolve, sep } from 'node:path';
 import { parse } from 'yaml';
-import { cardParts, readAnchor, locateAnchor, makeAnchor } from '../core/card';
+import { cardParts, readAnchor } from '../core/card';
+import { locateAnchor, makeAnchor } from '../content/anchors';
 import type { Asset, NodeInput, NodeKind } from '../core/model';
 import type { Repository } from './database';
 

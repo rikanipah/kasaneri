@@ -1,4 +1,5 @@
 import { t } from '../core/i18n';
+import { constrainedFuzzBounds, stableRandom } from './fuzz';
 import {DefaultScheduler,type DefaultSchedulerCard,Rating} from 'ts-fsrs';
 import {migrateFSRS6Parameters} from 'ts-fsrs/models/fsrs-6';
 import {randomUUID} from 'node:crypto';
@@ -7,48 +8,34 @@ import {Repository} from '../data/database';
 import {CardDependencies} from './card-dependencies';
 import {DEFAULT_SETTINGS,normalizeSettings,normalizeShortcuts,normalizeReviewOverrides,type StudySettings,type ReviewSettings} from '../core/settings';
 import {DeckProfiles,profileKey} from '../folders/decks';
-import {assembleReadingPushQueue,assembleFsrsPushQueue} from '../vendor/foliole/unifiedPushQueueAssembler';
-import {resolveInheritedPushQueuePriority} from '../vendor/foliole/unifiedPushQueueRules';
-import {validRecall} from './optimizer';
-import {readSchedule,recordStudyChange,recordTagChange,sameSchedule,studyChangeSession,parseSchedule,writeSchedule,type Schedule} from '../sync/study-changes';
+import {dayStartMs,dailySlots,hasDailyQuota,type DailySlots,type QuotaContext} from './quota';
+import {buildQueue,unlocked,deckScope,type QueueContext} from './queue';
+import {applyFsrsGrade,type GradeContext} from './grade';
+import {againChildBatch,childOperations,findUndoableOperation,restoreOperation} from './undo';
+import {computeCounts,availableToday,cardInfo,statistics,readingStatistics,simulateWorkload,type StatsContext} from './stats';
+import {pushPriority,pushSchedule,type PushContext} from '../reading/push';
+import {applyReadingAction,setReadingPosition,type ReadingAction} from '../reading/actions';
+import {readSchedule,recordStudyChange,recordTagChange,sameSchedule,writeSchedule,type Schedule} from '../sync/study-changes';
 import type {AgainChildCandidate,AgainChildSelection,FolderCounts,Material,PrerequisiteChange,PrerequisiteState,StudyItem,StudySnapshot} from '../core/model';
 
 type Scheduler=Awaited<ReturnType<typeof DefaultScheduler>>;
 type Row=Record<string,any>;
+type BuryChange={id:string;before:Schedule;after:Schedule};
 type Submission={sessionId:string;token:string;revision:number};
 type Session={id:string;mode:'cards'|'reading';folderId:string|null;queue:string[];current:string|null;token:string;
   completed:number;history:string[];submitted:Set<string>;shownAt:number;postponed:number};
-const unlocked='n.id NOT IN(SELECT value FROM json_each(?))';
-const inDeck=`n.folder_id IN(WITH RECURSIVE decks(id) AS(
-  SELECT id FROM nodes WHERE id=? AND kind='folder' AND deleted_at IS NULL
-  UNION ALL SELECT c.id FROM nodes c JOIN decks p ON c.parent_id=p.id WHERE c.kind='folder' AND c.deleted_at IS NULL
-) SELECT id FROM decks)`;
-const deckScope=(folderId:string|null)=>folderId?{filter:`AND ${inDeck}`,args:[folderId]}:{filter:'',args:[]};
-const againChildBatch='again-children:';
-/** 把一条排程变更翻译成复习记录里的一行文字（这些事件没有评分）。 */
-function scheduleEventLabel(before:Schedule,after:Schedule,details:{action?:string},everReviewed:boolean):string{
-  if(details?.action==='tags'){
-    if(!!before.hold!==!!after.hold)return after.hold?t('留存判定'):t('取消留存判定');
-    if(!!before.buried!==!!after.buried)return after.buried?t('搁置'):t('取消搁置');
-    return t('状态变更');
-  }
-  const reviewBefore=Number(before.review?.enabled||0),reviewAfter=Number(after.review?.enabled||0);
-  const readBefore=Number(before.reading.enabled||0),readAfter=Number(after.reading.enabled||0);
-  if(reviewBefore&&!reviewAfter&&readAfter)return t('待办暂停');
-  // 卡片加入复习后会被重置成新卡（state 里 reps 归零），所以用「这张卡有没有复习记录」判断
-  if(!reviewBefore&&reviewAfter)return everReviewed?t('返回复习'):t('加入复习');
-  if(readBefore&&!readAfter)return t('暂停待办');
-  if(!readBefore&&readAfter)return t('恢复待办');
-  return t('排程变更');
-}
+// 撤销/「重来」批次的前缀在 ./undo.ts（againChildBatch）
+/** 把一条排程变更翻译成复习记录里的一行文字（这些事件没有评价）。 */
 
 export class StudyService {
   private session:Session|null=null;
-  private statsCache:{at:number;value:Record<string,FolderCounts>;total:FolderCounts}|null=null;
+  private statsCache:{at:number;value:Record<string,FolderCounts>;total:FolderCounts;direct:Map<string,DailySlots>}|null=null;
   private profiles!:DeckProfiles;
   private schedulers=new Map<string,Scheduler>();
   private readonly dependencies:CardDependencies;
   private dependencyCache:{ids:Set<string>;json:string}|null=null;
+  // 2026-11-19：负载均衡用的「未来每天到期量」。按牌组缓存，invalidate() 时清空。
+  private loadBalanceCache:{dayStart:number;counts:Map<string,Map<number,number>>}|null=null;
   private constructor(readonly repository:Repository,private settings:StudySettings,private now:()=>number){
     // 解锁条件按先修卡所属牌组的 masteryReps 判定，没设置时回落到全局值。
     this.dependencies=new CardDependencies(repository,id=>{
@@ -57,6 +44,14 @@ export class StudyService {
     });
   }
   static async create(repository:Repository,now:()=>number=Date.now):Promise<StudyService>{
+    // Existing settings used zero for unlimited. Convert those values only once per library.
+    if(!repository.getSetting('dailyLimitValuesV1'))repository.transaction(()=>{
+      for(const path of ['$.newPerDay','$.reviewPerDay']){
+        repository.query("UPDATE settings SET value=json_set(value,?,NULL) WHERE key='studySettings' AND json_extract(value,?)=0").run(path,path);
+        repository.query('UPDATE deck_settings SET overrides=json_set(overrides,?,NULL) WHERE json_extract(overrides,?)=0').run(path,path);
+      }
+      repository.setSetting('dailyLimitValuesV1',true);
+    });
     const stored=repository.getSetting('studySettings') as Record<string,unknown>|null;
     const settings=normalizeSettings({...DEFAULT_SETTINGS,...stored as object,
       fontSize:repository.getSetting('fontSize')||DEFAULT_SETTINGS.fontSize,theme:repository.getSetting('theme')||DEFAULT_SETTINGS.theme});
@@ -82,7 +77,7 @@ export class StudyService {
     }
     return service;
   }
-  private static schedulerFor(settings:ReviewSettings){return DefaultScheduler({version:settings.fsrsVersion||'FSRS-7',desiredRetention:settings.desiredRetention,
+  private static schedulerFor(settings:ReviewSettings){return DefaultScheduler({version:settings.fsrsVersion||'FSRS-6',desiredRetention:settings.desiredRetention,
     ...(settings.fsrsWeights?.length?{weights:settings.fsrsVersion==='FSRS-6'?migrateFSRS6Parameters(settings.fsrsWeights):settings.fsrsWeights}:{}),
     maximumInterval:settings.maximumInterval,enableShortTerm:settings.enableShortTerm,enableFuzz:false,
     learningSteps:settings.enableShortTerm?(settings.learningSteps||['1m','10m']) as any:[],relearningSteps:settings.enableShortTerm?(settings.relearningSteps||['10m']) as any:[],allowModelOverride:false});}
@@ -107,7 +102,8 @@ export class StudyService {
         const interval=StudyService.nextInterval(this.schedulerForDeck((row.folderId as string|null)||null),state,profile.desiredRetention);
         if(!Number.isFinite(interval)||interval<=0)continue;
         const last=state.lastReviewAt?new Date(state.lastReviewAt).getTime():now;
-        const due=Math.round(last+interval*86400000);
+        // 2026-11-19（D3）：重算的到期日同样对齐到那天的日切点。
+        const due=dayStartMs(Math.round(last+interval*86400000),this.settings.dayStartHour);
         if(Number(row.due_at)===due)continue;
         const id=String(row.id),before=readSchedule(this.repository,id);
         this.repository.query('UPDATE review_cards SET due_at=?,revision=revision+1,updated_at=? WHERE node_id=?').run(due,now,id);
@@ -130,28 +126,70 @@ export class StudyService {
   private schedulerForDeck(folderId:string|null){return this.schedulers.get(profileKey(this.profiles.resolve(folderId)))!;}
   async hierarchyChanged(){this.invalidate();const profiles=new DeckProfiles(this.repository,this.settings);await this.prepareProfiles(profiles);this.profiles=profiles;this.invalidate();if(this.session)this.session.queue=[];}
   deckConfig(folderId:string){return this.profiles.configuration(folderId);}
+  private schedulerSettingsChanged(profiles:DeckProfiles):boolean{
+    return [null,...profiles.folders.keys()].some(id=>profileKey(this.profiles.resolve(id))!==profileKey(profiles.resolve(id)));
+  }
   async saveDeckConfig(input:{folderId:string;overrides:unknown}){
     this.profiles.configuration(input.folderId);const overrides=normalizeReviewOverrides(input.overrides);
     const profiles=new DeckProfiles(this.repository,this.settings,{folderId:input.folderId,overrides});await this.prepareProfiles(profiles);
     if(overrides)this.repository.query('INSERT INTO deck_settings(folder_id,overrides,updated_at) VALUES(?,?,?) ON CONFLICT(folder_id) DO UPDATE SET overrides=excluded.overrides,updated_at=excluded.updated_at')
       .run(input.folderId,JSON.stringify(overrides),this.now());
     else this.repository.query('DELETE FROM deck_settings WHERE folder_id=?').run(input.folderId);
+    const reschedule=this.settings.rescheduleOnChange&&this.schedulerSettingsChanged(profiles);
     this.profiles=profiles;if(this.session)this.session.queue=[];
-    if(this.settings.rescheduleOnChange)this.rescheduleCards(input.folderId);
+    if(reschedule)this.rescheduleCards(input.folderId);
     return this.deckConfig(input.folderId);
   }
   async saveConfig(input:{settings:unknown;shortcuts:unknown}){
+    const previous=this.settings;
     const settings=normalizeSettings(input.settings),shortcuts=normalizeShortcuts(input.shortcuts);
     const profiles=new DeckProfiles(this.repository,settings);await this.prepareProfiles(profiles);
+    const now=this.now();
     this.repository.transaction(()=>{
       this.repository.setSetting('studySettings',settings);this.repository.setSetting('shortcuts',shortcuts);
       this.repository.setSetting('fontSize',settings.fontSize);this.repository.setSetting('theme',settings.theme);
+      this.repository.recordSyncedSettingChanges(previous,settings,now);
     });
+    const reschedule=settings.rescheduleOnChange&&this.schedulerSettingsChanged(profiles);
     this.settings=settings;this.profiles=profiles;this.invalidate();if(this.session)this.session.queue=[];
-    if(settings.rescheduleOnChange)this.rescheduleCards(null);
+    if(reschedule)this.rescheduleCards(null);
     return this.config();
   }
-  invalidate(){this.statsCache=null;this.dependencyCache=null;}
+  /** 同步写入全局设置或解决设置冲突后刷新内存配置、牌组调度器与必要的重排。 */
+  async reloadSettings(rescheduleIfEnabled=true){
+    const stored=this.repository.getSetting('studySettings') as Record<string,unknown>|null;
+    const settings=normalizeSettings({...DEFAULT_SETTINGS,...(stored&&typeof stored==='object'&&!Array.isArray(stored)?stored:{}),
+      fontSize:this.repository.getSetting('fontSize')||DEFAULT_SETTINGS.fontSize,
+      theme:this.repository.getSetting('theme')||DEFAULT_SETTINGS.theme});
+    const profiles=new DeckProfiles(this.repository,settings);await this.prepareProfiles(profiles);
+    const reschedule=rescheduleIfEnabled&&settings.rescheduleOnChange&&this.schedulerSettingsChanged(profiles);
+    this.settings=settings;this.profiles=profiles;this.invalidate();if(this.session)this.session.queue=[];
+    if(reschedule)this.rescheduleCards(null);
+    return this.config();
+  }
+  invalidate(){this.statsCache=null;this.dependencyCache=null;this.loadBalanceCache=null;}
+  /** 2026-11-19（D6）：搁置到期后连 `buried` 标签一起清掉，和 Anki 日切解封一致；每天最多跑一次。
+   *  清理本身记一条 tags 变更，随同步过去，对端的标签也一起消失。 */
+  private buriedCleanupAt=0;
+  private cleanupBuriedTags(now:number){
+    const start=dayStartMs(now,this.settings.dayStartHour);
+    if(start<=this.buriedCleanupAt)return;
+    this.buriedCleanupAt=start;
+    const rows=this.repository.query(`SELECT node_id FROM review_cards WHERE COALESCE(buried_until,0)<=?
+        AND node_id IN(SELECT node_id FROM node_tags WHERE tag='buried')
+      UNION SELECT node_id FROM reading_state WHERE COALESCE(buried_until,0)<=?
+        AND node_id IN(SELECT node_id FROM node_tags WHERE tag='buried')`).all(now,now) as Row[];
+    if(!rows.length)return;
+    this.repository.transaction(()=>{
+      for(const row of rows){
+        const id=String(row.node_id),before=readSchedule(this.repository,id);
+        this.repository.query("DELETE FROM node_tags WHERE node_id=? AND tag='buried'").run(id);
+        const after=readSchedule(this.repository,id);
+        if(before&&after)recordStudyChange(this.repository,id,now,before,after,
+          {id:'unbury-rollover-'+id+'-'+now,kind:'fsrs',at:now});
+      }
+    });
+  }
   private blockedCards(){
     if(!this.dependencyCache){
       const ids=this.dependencies.blocked();
@@ -175,16 +213,31 @@ export class StudyService {
     if(node.kind==='cloze'){
       const card={...this.schedulerForDeck(node.folder_id?String(node.folder_id):null).newCard({now:new Date(now)}),cardId:id};
       this.repository.query(`INSERT OR IGNORE INTO review_cards(node_id,algorithm,algorithm_version,state,due_at,updated_at,stage,enabled)
-        VALUES(?,'fsrs',?,?,?,?,0,0)`).run(id,'ts-fsrs/6.0.0:'+(this.profiles.resolve(node.folder_id?String(node.folder_id):null).fsrsVersion||'FSRS-7'),JSON.stringify(card),now,now);
+        VALUES(?,'fsrs',?,?,?,?,0,0)`).run(id,'ts-fsrs/6.0.0:'+(this.profiles.resolve(node.folder_id?String(node.folder_id):null).fsrsVersion||'FSRS-6'),JSON.stringify(card),now,now);
     }
     const active=node.kind==='cloze'&&!!this.repository.query('SELECT enabled FROM review_cards WHERE node_id=?').get(id)?.enabled;
     this.repository.query('INSERT OR IGNORE INTO reading_state(node_id,due_at,enabled) VALUES(?,?,?)').run(id,now,active?0:1);
     this.invalidate();
   }
-  setPriority(id:string,priority:number|null){
+  setPriority(id:string,priority:number|null,reading?:Submission&{position:number}){
     if(priority!==null&&(!Number.isInteger(priority)||priority<0||priority>9))throw Error(t('优先级需要 0 到 9，或选择继承。'));
-    if(!this.repository.query('UPDATE nodes SET priority=? WHERE id=? AND deleted_at IS NULL').run(priority,id).changes)throw Error(t('项目已删除。'));
-    if(this.session)this.session.queue=[];
+    const session=this.session;
+    if(reading){
+      if(session?.mode!=='reading'||session.current!==id)throw Error(t('复习会话已改变。'));
+      const {node}=this.currentSubmission(session,reading);
+      if(node.priority===priority)return this.snapshot();
+    }
+    this.repository.transaction(()=>{
+      if(!this.repository.query('UPDATE nodes SET priority=? WHERE id=? AND deleted_at IS NULL').run(priority,id).changes)throw Error(t('项目已删除。'));
+      if(reading)this.setReadingPosition(id,reading.position);
+    });
+    if(session?.mode!=='reading')return;
+    session.queue=reading?this.candidates():[];
+    if(!reading)return;
+    // Keep the updated order, but give the next due card one turn if this card still ranks first.
+    if(session.queue[0]===id&&session.queue.length>1)[session.queue[0],session.queue[1]]=[session.queue[1],session.queue[0]];
+    this.next();
+    return this.snapshot();
   }
   setEnabled(id:string,enabled:boolean){
     const node=this.repository.getNode(id);if(!node||node.kind==='folder')throw Error(t('卡片不存在。'));
@@ -201,8 +254,8 @@ export class StudyService {
       if(node.kind==='cloze'&&enabled&&before.review?.enabled===0){
         const profile=this.profiles.resolve(node.folderId);
         const card={...this.schedulerForDeck(node.folderId).newCard({now:new Date(now)}),cardId:id};
-        this.repository.query(`UPDATE review_cards SET state=?,due_at=?,stage=0,algorithm_version=?,revision=revision+1
-          WHERE node_id=?`).run(JSON.stringify(card),now,'ts-fsrs/6.0.0:'+(profile.fsrsVersion||'FSRS-7'),id);
+        this.repository.query(`UPDATE review_cards SET state=?,due_at=?,stage=0,day_learning=0,learning_step=0,algorithm_version=?,revision=revision+1
+          WHERE node_id=?`).run(JSON.stringify(card),now,'ts-fsrs/6.0.0:'+(profile.fsrsVersion||'FSRS-6'),id);
       }
       const after=readSchedule(this.repository,id)!;
       recordStudyChange(this.repository,id,now,before,after);
@@ -232,21 +285,104 @@ export class StudyService {
     });
     if(this.session)this.session.queue=[];this.invalidate();
   }  /** 手动搁置到下一个日切点（和 Anki 的 Bury 一样），并打 buried 标签让状态/筛选能看出来。 */
-  bury(id:string){
+  bury(id:string,mode?:Session['mode']):BuryChange{
     const node=this.repository.getNode(id);
     if(!node||node.kind==='folder')throw Error(t('卡片不存在。'));
     this.register(id);
     const change=this.repository.transaction(()=>{
       const before=readSchedule(this.repository,id)!;
       const now=this.now();
-      const until=StudyService.dayStartMs(now,this.settings.dayStartHour)+86400000;
-      this.repository.query('UPDATE review_cards SET due_at=?,revision=revision+1 WHERE node_id=?').run(until,id);
+      const until=dayStartMs(now,this.settings.dayStartHour)+86400000;
+      const table=mode==='reading'||!before.review?'reading_state':'review_cards';
+      const previous=table==='reading_state'?before.reading:before.review!;
+      // 2026-11-19：搁置 = 隐藏到日切之后，到期日保持不变，次日自动恢复。
+      void table; void previous;
+      this.repository.query('UPDATE review_cards SET buried_until=?,revision=revision+1 WHERE node_id=?').run(until,id);
+      this.repository.query('UPDATE reading_state SET buried_until=?,revision=revision+1 WHERE node_id=?').run(until,id);
       this.repository.query("INSERT OR IGNORE INTO node_tags(node_id,tag) VALUES(?,'buried')").run(id);
       recordStudyChange(this.repository,id,now,before,readSchedule(this.repository,id)!);
       return {id,before,after:readSchedule(this.repository,id)!};
     });
-    if(this.session)this.session.queue=[];this.invalidate();
+    if(this.session&&!mode)this.session.queue=[];
+    this.invalidate();
     return change;
+  }
+  buryActive(input:Submission){
+    const session=this.active();
+    const {node}=this.currentSubmission(session,input);
+    const change=this.bury(node.id,session.mode);
+    this.next();
+    return {change,study:this.snapshot()};
+  }
+  /** 2026-11-17：待办暂停——保留暂停前的排程快照，方便 Ctrl+Z 原样恢复（不重置 FSRS）。 */
+  pauseActive(input:Submission){
+    const session=this.active();
+    const {node}=this.currentSubmission(session,input);
+    const change=this.setEnabled(node.id,false);
+    this.next();
+    return {change,study:this.snapshot()};
+  }
+  /** 原样恢复待办暂停前的排程：把 reading_state / review_cards 写回快照，并把会话切回该卡。 */
+  undoPause(change:{id:string;before:Schedule;after:Schedule}|null,sessionId:string):StudySnapshot|null{
+    if(!change)return this.session?this.snapshot():null;
+    let stale=false;
+    this.repository.transaction(()=>{
+      const current=readSchedule(this.repository,change.id);
+      if(!current)return;
+      if(sameSchedule(current,change.after)){
+        writeSchedule(this.repository,change.id,change.before);
+        recordStudyChange(this.repository,change.id,this.now(),current,change.before);
+        return;
+      }
+      // 其它端或本机后续操作已经改过排程时，不覆盖较新的状态；按当前状态重新暂停，
+      // 避免撤销按钮只显示错误代码，同时保证卡片不会意外回到复习队列。
+      stale=true;
+      const now=this.now();
+      this.repository.query('UPDATE review_cards SET enabled=0,revision=revision+1 WHERE node_id=?').run(change.id);
+      this.repository.query('UPDATE reading_state SET enabled=1,revision=revision+1 WHERE node_id=?').run(change.id);
+      const after=readSchedule(this.repository,change.id);
+      if(current&&after)recordStudyChange(this.repository,change.id,now,current,after);
+    });
+    this.invalidate();
+    if(!this.session)return null;
+    const result=this.focus(change.id);
+    if(stale)(result as StudySnapshot&{pauseUndoStale?:boolean}).pauseUndoStale=true;
+    return result;
+  }  /** 2026-11-17：把当前会话切到指定卡片（撤销删除后回到被删的那张）。 */
+  focus(id:string):StudySnapshot{
+    const session=this.session;
+    if(!session)return this.snapshot();
+    const node=this.repository.getNode(id);
+    if(!node||node.kind==='folder')return this.snapshot();
+    this.register(id);
+    session.queue=session.queue.filter(queued=>queued!==id);
+    session.current=id;
+    session.token=randomUUID();
+    session.shownAt=this.now();
+    return this.snapshot();
+  }
+  undoBury({id,before,after}:BuryChange,sessionId:string):StudySnapshot|null{
+    this.repository.transaction(()=>{
+      const current=readSchedule(this.repository,id);
+      if(!this.repository.getNode(id)||!current||!sameSchedule(current,after)||
+        current.reading.due_at!==after.reading.due_at||current.review?.due_at!==after.review?.due_at)
+        throw Error(t('卡片的排程已变化，无法撤销。'));
+      writeSchedule(this.repository,id,before);
+      this.repository.query('UPDATE review_cards SET buried_until=0 WHERE node_id=?').run(id);
+      this.repository.query('UPDATE reading_state SET buried_until=0 WHERE node_id=?').run(id);
+      recordStudyChange(this.repository,id,this.now(),current,before);
+    });
+    this.invalidate();
+    const session=this.session;
+    if(!session)return null;
+    if(session.id===sessionId){
+      const next=session.current===id?null:session.current;
+      session.queue=session.queue.filter(queued=>queued!==id&&queued!==next);
+      if(next)session.queue.unshift(next);
+      session.current=id;
+      session.token=randomUUID();session.shownAt=this.now();
+    }
+    return this.refresh();
   }
   /** 取消搁置——删掉 buried 标签，并把到期时间拉回现在，等下一次推送。 */
   unbury(id:string){
@@ -257,14 +393,16 @@ export class StudyService {
       if(!this.repository.query("SELECT 1 FROM node_tags WHERE node_id=? AND tag='buried'").get(id))return null;
       const before=readSchedule(this.repository,id)!,now=this.now();
       this.repository.query("DELETE FROM node_tags WHERE node_id=? AND tag='buried'").run(id);
-      this.repository.query('UPDATE review_cards SET due_at=MIN(due_at,?),revision=revision+1 WHERE node_id=?').run(now,id);
+      const table=!before.review||(!before.review.enabled&&before.reading.due_at>now&&
+        before.reading.due_at===dayStartMs(before.reading.due_at,this.settings.dayStartHour))?'reading_state':'review_cards';
+      this.repository.query('UPDATE '+table+' SET due_at=MIN(due_at,?),revision=revision+1 WHERE node_id=?').run(now,id);
       recordStudyChange(this.repository,id,now,before,readSchedule(this.repository,id)!);
       return {id,before,after:readSchedule(this.repository,id)!};
     });
     if(this.session)this.session.queue=[];this.invalidate();
     return change;
   }
-  /** 卡片属性面板里改标签。hold / buried / leech 是内部状态，删标签必须连带改队列，
+  /** 卡片标签面板里改标签。hold / buried / leech 是内部状态，删标签必须连带改队列，
    *  否则会出现「标签没了但卡片还在暂存点/还搁置着」。 */
   setCardTag(id:string,tag:string,on:boolean){
     const node=this.repository.getNode(id);
@@ -304,6 +442,8 @@ export class StudyService {
         if(!this.repository.getNode(id)||!current||!sameSchedule(current,after))
           throw Error(t('卡片的排程已变化，无法撤销。'));
         writeSchedule(this.repository,id,before);
+      this.repository.query('UPDATE review_cards SET buried_until=0 WHERE node_id=?').run(id);
+      this.repository.query('UPDATE reading_state SET buried_until=0 WHERE node_id=?').run(id);
         recordStudyChange(this.repository,id,this.now(),current,before);
       }
     });
@@ -322,12 +462,16 @@ export class StudyService {
   nodeState(id:string){
     const node=this.repository.getNode(id);if(!node||node.kind==='folder')return null;
     const review=this.repository.query('SELECT * FROM review_cards WHERE node_id=?').get(id),push=this.repository.query('SELECT * FROM reading_state WHERE node_id=?').get(id),active=node.kind==='cloze'&&!!review?.enabled;
-    const buried=node.kind==='cloze'&&Boolean(this.repository.query("SELECT 1 FROM node_tags WHERE node_id=? AND tag='buried'").get(id))&&Number(review?.due_at||0)>this.now();
+    // 2026-11-19：记忆搁置与待办搁置分开判断（两张表本来就分开存）
+    const nowMs=this.now();
+    const buriedReview=Number(review?.buried_until||0)>nowMs;
+    const buriedTodo=Number(push?.buried_until||0)>nowMs;
+    const buried=buriedReview||buriedTodo;
     const hold=Boolean(this.repository.query("SELECT 1 FROM node_tags WHERE node_id=? AND tag='hold'").get(id));
     const lastRead=this.repository.query('SELECT action FROM reading_log WHERE node_id=? AND undone_at IS NULL ORDER BY reviewed_at DESC LIMIT 1').get(id);
     const dismissed=!push?.enabled&&lastRead?.action==='dismiss';
     const reviewed=Boolean(review&&Number(review.stage||0)>0);
-    return {enabled:node.kind==='cloze'?!!review?.enabled:!!push?.enabled,reviewEnabled:active,pushEnabled:!!push?.enabled,buried:!!buried,hold,dismissed,reviewed,
+    return {enabled:node.kind==='cloze'?!!review?.enabled:!!push?.enabled,reviewEnabled:active,pushEnabled:!!push?.enabled,buried:!!buried,buriedReview,buriedTodo,hold,dismissed,reviewed,
       priority:node.priority,effectivePriority:this.priority(id),kind:active?'fsrs':'reading',dueAt:(active?review:push)?.due_at||null,
       readingPosition:Number(push?.reading_position||0)};
   }
@@ -336,27 +480,10 @@ export class StudyService {
     return Number(this.repository.query('SELECT count(*) n FROM review_log WHERE node_id=? AND rating=1 AND undone_at IS NULL').get(id)?.n||0);
   }
   counts():Record<string,FolderCounts>{
-    const now=this.now();if(this.statsCache&&now-this.statsCache.at<15000)return this.statsCache.value;
-    const result:Record<string,FolderCounts>={};
-    const rows=this.repository.query(`SELECT n.folder_id,
-      SUM(CASE WHEN n.kind='cloze' AND n.study_ready=1 AND r.enabled=1 AND r.stage=0 THEN 1 ELSE 0 END) AS fresh,
-      SUM(CASE WHEN n.kind='cloze' AND n.study_ready=1 AND r.enabled=1 AND r.stage IN(1,3) THEN 1 ELSE 0 END) AS learning,
-      SUM(CASE WHEN n.kind='cloze' AND n.study_ready=1 AND r.enabled=1 AND r.stage=2 AND r.due_at<=? THEN 1 ELSE 0 END) AS review,
-      SUM(CASE WHEN n.push_ready=1 AND(n.kind!='cloze' OR r.enabled=0) AND s.enabled=1 AND s.due_at<=? THEN 1 ELSE 0 END) AS readingDue,
-      SUM(CASE WHEN n.kind='cloze' AND n.study_ready=1 AND r.enabled=1 AND r.due_at<=? THEN 1 ELSE 0 END) AS fsrsDue
-      FROM nodes n LEFT JOIN review_cards r ON r.node_id=n.id LEFT JOIN reading_state s ON s.node_id=n.id
-      WHERE n.kind!='folder' AND n.deleted_at IS NULL AND(n.study_ready=1 OR n.push_ready=1) AND ${unlocked}
-      GROUP BY n.folder_id`).all(now,now,now,this.blockedCards().json);
-    const zero=():FolderCounts=>({new:0,learning:0,review:0,readingDue:0,fsrsDue:0}),total=zero();
-    for(const folder of this.profiles.folders.values())result[folder.id]=zero();
-    for(const row of rows){const count={new:Number(row.fresh),learning:Number(row.learning),review:Number(row.review),readingDue:Number(row.readingDue),fsrsDue:Number(row.fsrsDue)};
-      result[String(row.folder_id)]=count;for(const key of Object.keys(total) as Array<keyof FolderCounts>)total[key]+=count[key];}
-    const remaining=new Map([...this.profiles.folders.keys()].map(id=>[id,0]));
-    for(const folder of this.profiles.folders.values())if(folder.parentId&&remaining.has(folder.parentId))remaining.set(folder.parentId,remaining.get(folder.parentId)!+1);
-    const leaves=[...remaining].filter(([,count])=>count===0).map(([id])=>id);
-    while(leaves.length){const id=leaves.pop()!,parent=this.profiles.folders.get(id)?.parentId;
-      if(parent&&result[parent]){for(const key of Object.keys(total) as Array<keyof FolderCounts>)result[parent][key]+=result[id][key];remaining.set(parent,remaining.get(parent)!-1);if(remaining.get(parent)===0)leaves.push(parent);}}
-    this.statsCache={at:now,value:result,total};return result;
+    const now=this.now();this.cleanupBuriedTags(now);
+    if(this.statsCache&&now-this.statsCache.at<15000)return this.statsCache.value;
+    this.statsCache={at:now,...computeCounts(this.statsContext())};
+    return this.statsCache.value;
   }
   start(_legacyFolderId?:string|null,mode?:StudySettings['studyMode']):StudySnapshot {
     if(mode&&!['mixed','reading','cards'].includes(mode))throw Error(t('复习模式无效。'));
@@ -376,14 +503,17 @@ export class StudyService {
     const session=this.active();
     if(session.current){const node=this.repository.getNode(session.current),row=node?this.stateRow(node):null;
       const ready=node?this.ready(node.id):0;
-      if(!node||!this.matchesMode(node)||!ready||!row?.enabled||this.blockedCards().ids.has(node.id))session.current=null;}
+      if(!node||!this.matchesMode(node)||!ready||!row?.enabled||this.blockedCards().ids.has(node.id)||!hasDailyQuota(this.quotaContext(),node.folderId,row.stage,undefined,Number(row.due_at),Number(row.day_learning||0))){
+        session.current=null;session.queue=[];
+      }}
     if(!session.current)this.next();return this.snapshot();
   }
   private active(){if(!this.session)throw Error(t('当前没有进入复习。'));return this.session;}
   private matchesMode(node:Material){
     const session=this.active();
-    if(session.mode==='reading')return node.kind!=='folder'&&(node.kind!=='cloze'||!this.repository.query('SELECT enabled FROM review_cards WHERE node_id=?').get(node.id)?.enabled);
-    if(node.kind!=='cloze')return false;
+    if(session.mode==='reading'){
+      if(node.kind==='folder'||(node.kind==='cloze'&&this.repository.query('SELECT enabled FROM review_cards WHERE node_id=?').get(node.id)?.enabled))return false;
+    }else if(node.kind!=='cloze')return false;
     if(!session.folderId)return true;
     for(let id=node.folderId;id;id=this.profiles.folders.get(id)?.parentId??null){
       if(id===session.folderId)return this.profiles.folders.has(id);
@@ -392,391 +522,88 @@ export class StudyService {
   }
   private ready(id:string,mode=this.active().mode){return this.repository.query(`SELECT ${mode==='cards'?'study_ready':'push_ready'} ready FROM nodes WHERE id=?`).get(id)?.ready;}
   private stateRow(node:Material,mode=this.active().mode):Row|undefined {return this.repository.query(`SELECT * FROM ${mode==='cards'?'review_cards':'reading_state'} WHERE node_id=?`).get(node.id) as Row|undefined;}
-  private priority(id:string):number{return resolveInheritedPushQueuePriority(this.repository.path(id).reverse().map(node=>node.priority),this.settings.defaultPriority as any);}
-  // ===== 采用 Foliole 阅读推送算法，四动作：读完/稍后/本轮再出/搁置 =====
-  // 公式对照 foliole/src/features/review/model/unifiedPushQueueRules.ts：
-  //   growth = 1.1 + (priority-1) * (1.5-1.1) / 8    ← 优先级 1 → 1.1，优先级 9 → 1.5，线性映射
-  //   nextInterval = max(初始间隔, prevInterval * growth^exponent)
-  //   读完 exponent=1（全增长）；稍后 exponent=0.5（只乘平方根，稍拉长）；首读固定初始间隔（1 天）。
-  // 「本轮再出」不动间隔与次数（见 grade() 的 soon 分支）。
-  private static readonly GROWTH_MIN=1.1;
-  private static readonly GROWTH_MAX=1.5;
-  private readingGrowth(id:string):number{
-    const priority=this.priority(id)||this.settings.defaultPriority;
-    return Math.round((StudyService.GROWTH_MIN+(priority-1)*(StudyService.GROWTH_MAX-StudyService.GROWTH_MIN)/8)*100)/100;
-  }
-  private pushSchedule(id:string,row:Row,action:'read'|'later',now:number){
-    if(action==='later'&&this.settings.readingLaterDays>0){
-      return {dueAt:now+this.settings.readingLaterDays*86400000,interval:Number(row.interval_ms),reps:Number(row.reps)};
-    }
-    const initial=this.settings.readingInitialDays*86400000;
-    const reps=Number(row.reps);
-    const interval=Math.round(reps<=0?initial:Math.max(initial,Number(row.interval_ms)*Math.pow(this.readingGrowth(id),action==='later'?0.5:1)));
-    return {dueAt:now+interval,interval,reps:reps+1};
-  }
-  // ===== auto-postpone（SM「自动延后」策略层）=====
-  // auto-postpone 已取消——允许积压，队列完全按优先级与到期时间处理。
-  setReadingPosition(id:string,position:number):void{
-    if(!Number.isFinite(position)||position<0)throw Error(t('阅读位置无效。'));
-    if(!this.repository.query('UPDATE reading_state SET reading_position=?,revision=revision+1 WHERE node_id=?')
-      .run(Math.min(100000000,Math.floor(position)),id).changes)throw Error(t('卡片不存在。'));
-  }
-  cardInfo(input:{id:string;offset?:number;horizon?:number}){
-    const node=this.repository.getNode(input.id);if(!node||node.kind==='folder')throw Error(t('卡片不存在。'));
-    const r=this.repository.query('SELECT * FROM review_cards WHERE node_id=?').get(node.id) as Row|undefined;
-    const push=this.repository.query('SELECT * FROM reading_state WHERE node_id=?').get(node.id),profile=this.profiles.resolve(node.folderId),now=this.now();
-    const offset=Math.max(0,Math.floor(Number(input.offset)||0)),horizon=Math.max(1,Math.min(36500,Number(input.horizon)||180));
-    // 复习记录里也带上排程事件（待办暂停 / 返回复习 / 搁置 / 留存判定这些），
-    // 它们没有评分，评分列留空；真正的复习记录仍然来自 review_log。
-    const eventFilter=`node_id=? AND session_id=? AND kind='schedule'
-      AND json_extract(json_extract(after_state,'$.details'),'$.action') IN ('queue','tags')`;
-    const total=Number(this.repository.query(`SELECT
-      (SELECT count(*) FROM review_log WHERE node_id=?)+
-      (SELECT count(*) FROM study_operations WHERE ${eventFilter}) AS n`)
-      .get(node.id,node.id,studyChangeSession)!.n);
-    const everReviewed=Number(this.repository.query('SELECT count(*) n FROM review_log WHERE node_id=?').get(node.id)!.n)>0;
-    const history=(this.repository.query(`
-      SELECT 'review' AS source,event_id AS id,reviewed_at AS at,rating,details,before_state,after_state,undone_at
-        FROM review_log WHERE node_id=?
-      UNION ALL
-      SELECT 'event',event_id,reviewed_at,NULL,json_extract(after_state,'$.details'),
-        before_state,json_extract(after_state,'$.schedule'),undone_at
-        FROM study_operations WHERE ${eventFilter}
-      ORDER BY at DESC,id DESC LIMIT 100 OFFSET ?`)
-      .all(node.id,node.id,studyChangeSession,offset) as Row[]).map(row=>{
-      if(String(row.source)==='event'){
-        let label=t('排程变更');
-        try{label=scheduleEventLabel(parseSchedule(String(row.before_state)),parseSchedule(String(row.after_state)),
-          JSON.parse(String(row.details||'{}')),everReviewed);}catch{/* 老数据格式不对就退回默认文字 */}
-        return {id:String(row.id),at:Number(row.at),kind:'event' as const,label,rating:null,intervalDays:null,type:null,
-          stability:null,difficulty:null,elapsedDays:null,seconds:null,undone:!!row.undone_at};
-      }
-      const details=JSON.parse(String(row.details)),after=JSON.parse(String(row.after_state)),before=JSON.parse(String(row.before_state));
-      const original=details.anki,ivl=original?.ivl;
-      return {id:String(row.id),at:Number(row.reviewed_at),kind:'review' as const,label:null,rating:Number(row.rating),intervalDays:original?(ivl<0?-ivl/86400:ivl):(after?.scheduledDays??null),
-        // 复习类型（0 新卡 / 1 学习 / 2 复习 / 3 重新学习），供 Anki 式历史表显示
-  type:typeof before?.state==='number'?before.state:(typeof original?.type==='number'?original.type:null),
-  stability:after?.stability??null,difficulty:after?.difficulty??null,elapsedDays:after?.lastReviewAt&&before?.lastReviewAt?(new Date(after.lastReviewAt).getTime()-new Date(before.lastReviewAt).getTime())/86400000:null,
-        seconds:original?Number(original.time||0)/1000:details.durationMs===undefined?null:details.durationMs/1000,undone:!!row.undone_at};
-    });
-    const state=r?JSON.parse(r.state):null,curve:Array<{days:number;probability:number}>=[];let retrievability:number|null=null;
-    if(r&&state?.lastReviewAt&&state.stability>0){
-      const scheduler=this.schedulerForDeck(node.folderId),card=this.card(r);
-      for(let i=0;i<=80;i++){const days=horizon*i/80,at=new Date(now+days*86400000),elapsed=Math.max(0,scheduler.chrono.difference(card.lastReviewAt!,at));
-        const probability=Math.max(0,Math.min(1,scheduler.model.forgettingCurve(card,elapsed)));curve.push({days,probability});}
-      retrievability=curve[0].probability;
-    }
-    // 参照 Anki「卡片信息」补齐字段——有效复习次数、首次/最近复习、当前间隔、
-    // 总用时与平均用时（Anki 的 total/average time），供卡片信息面板复现。
-    const aggregate=this.repository.query(`SELECT MIN(CASE WHEN undone_at IS NULL THEN reviewed_at END) AS firstReview,
-        MAX(CASE WHEN undone_at IS NULL THEN reviewed_at END) AS lastReview,
-        SUM(CASE WHEN undone_at IS NULL THEN 1 ELSE 0 END) AS live
-      FROM review_log WHERE node_id=?`).get(node.id)!;
-    let totalSeconds:number|null=null;
-    try{
-      const timeline=this.repository.query(`SELECT SUM(CAST(json_extract(details,'$.durationMs') AS REAL)) AS ms
-        FROM review_log WHERE node_id=? AND undone_at IS NULL`).get(node.id);
-      if(timeline?.ms!==null&&timeline?.ms!==undefined)totalSeconds=Number(timeline.ms)/1000;
-    }catch{totalSeconds=null;}
-    const liveCount=Number(aggregate.live||0);
-    const intervalDays=r?.due_at&&state?.lastReviewAt?(Number(r.due_at)-new Date(state.lastReviewAt).getTime())/86400000:null;
-    const elapsedDays=state?.lastReviewAt?(now-new Date(state.lastReviewAt).getTime())/86400000:null;
-    return {id:node.id,title:node.title,kind:node.kind,path:this.repository.path(node.id).map(n=>n.title).join(' / '),
-      prerequisites:node.kind==='cloze'?this.prerequisites(node.id):null,
-      tags:this.repository.query('SELECT tag FROM node_tags WHERE node_id=? ORDER BY tag').all(node.id).map(row=>String(row.tag)),
-      leechCount:this.leechLapses(node.id),
-      settings:profile,reviewEnabled:node.kind==='cloze'&&!!r?.enabled,pushEnabled:!!push?.enabled,dueAt:r?.due_at??null,pushDueAt:push?.due_at??null,
-      state,createdAt:this.repository.query('SELECT created_at FROM nodes WHERE id=?').get(node.id)?.created_at,
-      updatedAt:this.repository.query('SELECT updated_at FROM nodes WHERE id=?').get(node.id)?.updated_at,
-      reviewCount:liveCount,firstReviewAt:aggregate.firstReview?Number(aggregate.firstReview):null,
-      latestReviewAt:aggregate.lastReview?Number(aggregate.lastReview):null,
-      intervalDays,elapsedDays,totalSeconds,
-      averageSeconds:liveCount&&totalSeconds!==null?totalSeconds/liveCount:null,
-      retrievability,curve,horizon,history,total,offset};
-  }
-  statistics(input:{folderId?:string;days?:number}={}){
-    const now=this.now(),days=Math.max(7,Math.min(366,Math.floor(Number(input.days)||30))),start=new Date(now);start.setHours(0,0,0,0);start.setDate(start.getDate()-days+1);
-    const from=start.getTime(),args:any[]=[],where=["n.deleted_at IS NULL","n.kind!='folder'"];
-    if(input.folderId){where.push(inDeck);args.push(input.folderId);}
-    const scope=where.join(' AND '),summary=this.repository.query(`SELECT count(*) total,
-      SUM(CASE WHEN n.kind='cloze' THEN 1 ELSE 0 END) tests,
-      SUM(CASE WHEN n.kind='cloze' AND r.enabled=1 AND r.stage=0 AND n.study_ready=1 THEN 1 ELSE 0 END) newCards,
-      SUM(CASE WHEN n.kind='cloze' AND r.enabled=1 AND r.stage>0 AND n.study_ready=1 THEN 1 ELSE 0 END) learned,
-      SUM(CASE WHEN s.enabled=1 AND(n.kind!='cloze' OR r.enabled=0) THEN 1 ELSE 0 END) pushing,
-      SUM(CASE WHEN n.kind='cloze' AND r.enabled=0 THEN 1 ELSE 0 END) suspended,
-      SUM(CASE WHEN EXISTS(SELECT 1 FROM node_tags t WHERE t.node_id=n.id AND t.tag='leech') THEN 1 ELSE 0 END) leeches
-      FROM nodes n LEFT JOIN review_cards r ON r.node_id=n.id LEFT JOIN reading_state s ON s.node_id=n.id WHERE ${scope}`).get(...args)!;
-    const daily=this.repository.query(`SELECT date(l.reviewed_at/1000,'unixepoch','localtime') day,count(*) answers,SUM(CASE WHEN l.rating=1 THEN 1 ELSE 0 END) forgot
-      FROM review_log l JOIN nodes n ON n.id=l.node_id WHERE ${scope} AND l.undone_at IS NULL AND l.reviewed_at>=? GROUP BY day ORDER BY day`).all(...args,from);
-    const ratings=this.repository.query(`SELECT l.rating,count(*) count FROM review_log l JOIN nodes n ON n.id=l.node_id WHERE ${scope} AND l.undone_at IS NULL AND l.reviewed_at>=? GROUP BY rating`).all(...args,from);
-    // 到期预测——覆盖未来 3650 天（供「全部」视图），逾期归到"今天"那一格（对齐 Anki forecast 口径）。
-    const forecast=this.repository.query(`SELECT date(MAX(r.due_at,?)/1000,'unixepoch','localtime') day,count(*) count FROM review_cards r JOIN nodes n ON n.id=r.node_id
-      WHERE ${scope} AND n.kind='cloze' AND n.study_ready=1 AND r.enabled=1 AND r.due_at<=? GROUP BY day ORDER BY day`).all(now,...args,now+3650*86400000);
-    //   · 复习间隔分布 / 记忆稳定期分布 / 难度分布（来自卡片当前 FSRS 状态）
-    //   · 回答按钮分布、逐小时分析（来自 review_log）
-    //   · 每日新增卡片（nodes.created_at）
-    // 日历热力图、日程表这类依赖 Anki 专有概念的图不做（用户确认它们在我们语义下没有意义）。
-    const bucketsOf=(value:number,edges:number[])=>edges.findIndex(edge=>value<edge);
-    const intervalEdges=[1,3,7,14,30,90,180,365,Infinity];
-    const intervalLabels=[t('<1 天'),t('1–3 天'),t('3–7 天'),t('7–14 天'),t('14–30 天'),t('30–90 天'),t('90–180 天'),t('180–365 天'),t('>365 天')];
-    const intervalBuckets=intervalLabels.map(label=>({label,count:0}));
-    const stabilityBuckets=intervalLabels.map(label=>({label,count:0}));
-    const difficultyBuckets=Array.from({length:10},(_,index)=>({label:String(index+1),count:0}));
-    const cardRows=this.repository.query(`SELECT r.state AS state FROM review_cards r JOIN nodes n ON n.id=r.node_id
-      WHERE ${scope} AND n.kind='cloze' AND r.enabled=1`).all(...args) as Array<{state:string}>;
-    for(const row of cardRows){
-      let state:any=null;try{state=JSON.parse(String(row.state));}catch{continue;}
-      const scheduled=Number(state?.scheduledDays);
-      if(Number.isFinite(scheduled))intervalBuckets[Math.max(0,bucketsOf(scheduled,intervalEdges))]!.count++;
-      const stability=Number(state?.stability);
-      if(Number.isFinite(stability)&&stability>0)stabilityBuckets[Math.max(0,bucketsOf(stability,intervalEdges))]!.count++;
-      const difficulty=Number(state?.difficulty);
-      if(Number.isFinite(difficulty)&&difficulty>0)difficultyBuckets[Math.min(9,Math.max(0,Math.round(difficulty)-1))]!.count++;
-    }
-    const buttonRow=this.repository.query(`SELECT
-        SUM(CASE WHEN l.rating=1 THEN 1 ELSE 0 END) again,SUM(CASE WHEN l.rating=2 THEN 1 ELSE 0 END) hard,
-        SUM(CASE WHEN l.rating=3 THEN 1 ELSE 0 END) good,SUM(CASE WHEN l.rating=4 THEN 1 ELSE 0 END) easy
-      FROM review_log l JOIN nodes n ON n.id=l.node_id WHERE ${scope} AND l.undone_at IS NULL AND l.reviewed_at>=?`).get(...args,from)!;
-    const hourlyRows=this.repository.query(`SELECT CAST(strftime('%H',l.reviewed_at/1000,'unixepoch','localtime') AS INTEGER) hour,count(*) count
-      FROM review_log l JOIN nodes n ON n.id=l.node_id WHERE ${scope} AND l.undone_at IS NULL AND l.reviewed_at>=?
-      GROUP BY hour`).all(...args,from) as Array<{hour:number;count:number}>;
-    const hourly=Array.from({length:24},(_,hour)=>({label:String(hour).padStart(2,'0')+':00',count:hourlyRows.find(row=>Number(row.hour)===hour)?.count||0}));
-    const addedRows=this.repository.query(`SELECT date(n.created_at/1000,'unixepoch','localtime') day,count(*) count
-      FROM nodes n WHERE ${scope} AND n.created_at>=? GROUP BY day ORDER BY day`).all(...args,from) as Array<{day:string;count:number}>;
-    const studiedDays=new Set((daily as Array<{day:string}>).map(row=>String(row.day))).size;
-    return {title:input.folderId?this.profiles.configuration(input.folderId).path:t('全部牌组'),days,summary,daily,ratings,forecast,
-      intervalBuckets,stabilityBuckets,difficultyBuckets,
-      buttons:{again:Number(buttonRow.again||0),hard:Number(buttonRow.hard||0),good:Number(buttonRow.good||0),easy:Number(buttonRow.easy||0)},
-      hourly,added:addedRows,studiedDays};
-  }
+  private priority(id:string):number{return pushPriority(this.pushContext(),id);}
+  // 阅读推送的间隔增长与四动作见 ./reading/push.ts 与 ./reading/actions.ts
+  private pushContext():PushContext{return {repository:this.repository,settings:this.settings};}
+  setReadingPosition(id:string,position:number):void{setReadingPosition(this.repository,id,position);}
+  cardInfo(input:{id:string;offset?:number;horizon?:number}){return cardInfo(this.statsContext(),input);}
+  statistics(input:{folderId?:string;days?:number}={}){return statistics(this.statsContext(),input);}
   /** 待办统计（轻量）：主题/提取数量、待办状态、今日到期、阅读动作与未来到期。 */
-  readingStatistics(input:{folderId?:string;days?:number}={}){
-    const now=this.now(),days=Math.max(7,Math.min(366,Math.floor(Number(input.days)||30))),start=new Date(now);start.setHours(0,0,0,0);start.setDate(start.getDate()-days+1);
-    const from=start.getTime(),args:any[]=[],where=["n.deleted_at IS NULL","n.kind!='folder'"];
-    if(input.folderId){where.push(inDeck);args.push(input.folderId);}
-    const scope=where.join(' AND ');
-    const summary=this.repository.query(`SELECT SUM(CASE WHEN n.kind!='cloze' THEN 1 ELSE 0 END) total,
-      SUM(CASE WHEN n.kind='topic' THEN 1 ELSE 0 END) topics,
-      SUM(CASE WHEN n.kind='material' THEN 1 ELSE 0 END) materials,
-      SUM(CASE WHEN n.kind!='cloze' AND s.enabled=1 THEN 1 ELSE 0 END) pushing,
-      SUM(CASE WHEN n.kind!='cloze' AND COALESCE(s.enabled,0)=0 THEN 1 ELSE 0 END) stopped,
-      SUM(CASE WHEN n.kind!='cloze' AND COALESCE(s.enabled,0)=0 AND (
-        SELECT l.action FROM reading_log l WHERE l.node_id=n.id AND l.undone_at IS NULL ORDER BY l.reviewed_at DESC,l.event_id DESC LIMIT 1)='dismiss' THEN 1 ELSE 0 END) completed,
-      SUM(CASE WHEN n.kind!='cloze' AND s.enabled=1 AND s.due_at<=? THEN 1 ELSE 0 END) dueToday
-      FROM nodes n LEFT JOIN reading_state s ON s.node_id=n.id WHERE ${scope}`).get(now,...args)!;
-    const actions=this.repository.query(`SELECT l.action,count(*) count FROM reading_log l JOIN nodes n ON n.id=l.node_id
-      WHERE ${scope} AND l.undone_at IS NULL AND l.reviewed_at>=? GROUP BY l.action`).all(...args,from) as Array<{action:string;count:number}>;
-    const daily=this.repository.query(`SELECT date(l.reviewed_at/1000,'unixepoch','localtime') day,count(*) actions,
-      SUM(CASE WHEN l.action='read' THEN 1 ELSE 0 END) reads,SUM(CASE WHEN l.action='dismiss' THEN 1 ELSE 0 END) done
-      FROM reading_log l JOIN nodes n ON n.id=l.node_id WHERE ${scope} AND l.undone_at IS NULL AND l.reviewed_at>=?
-      GROUP BY day ORDER BY day`).all(...args,from) as Array<{day:string;actions:number;reads:number;done:number}>;
-    const forecast=this.repository.query(`SELECT date(MAX(s.due_at,?)/1000,'unixepoch','localtime') day,count(*) count
-      FROM reading_state s JOIN nodes n ON n.id=s.node_id WHERE ${scope} AND n.kind!='cloze' AND s.enabled=1 AND s.due_at<=?
-      GROUP BY day ORDER BY day`).all(now,...args,now+3650*86400000) as Array<{day:string;count:number}>;
-    const studiedDays=new Set(daily.map(row=>String(row.day))).size;
-    const countOf=(action:string)=>Number(actions.find(row=>row.action===action)?.count||0);
-    return {title:input.folderId?this.profiles.configuration(input.folderId).path:t('全部牌组'),days,summary,actions,
-      daily,forecast,studiedDays,read:countOf('read'),later:countOf('later'),soon:countOf('soon'),done:countOf('dismiss')};
-  }
-  async simulateWorkload(folderId:string|null){
-    const scope=deckScope(folderId),now=this.now(),day=86400000,days=30;
-    const blocked=this.blockedCards().json;
-    const rows=this.repository.query(`SELECT n.id,r.state,r.due_at,r.stage,r.algorithm_version,n.folder_id FROM review_cards r JOIN nodes n ON n.id=r.node_id
-      WHERE r.enabled=1 AND n.kind='cloze' AND n.study_ready=1 AND n.deleted_at IS NULL AND ${unlocked} ${scope.filter}`).all(blocked,...scope.args);
-    const profiles=this.profiles;
-    const history=this.repository.query(`SELECT n.folder_id,l.rating,COUNT(*) AS count
-      FROM review_log l JOIN nodes n ON n.id=l.node_id
-      WHERE n.kind='cloze' AND n.deleted_at IS NULL AND l.undone_at IS NULL AND ${validRecall} ${scope.filter}
-      GROUP BY n.folder_id,l.rating`).all(...scope.args);
-    const countsByFolder=new Map<string,number[]>(),overall=[0,0,0,0];
-    for(const row of history){
-      const id=String(row.folder_id),index=Number(row.rating)-1,count=Number(row.count);
-      const counts=countsByFolder.get(id)??[0,0,0,0];
-      counts[index]+=count;overall[index]+=count;
-      countsByFolder.set(id,counts);
-    }
-    const total=(counts:number[])=>counts.reduce((sum,count)=>sum+count,0);
-    const historyCount=total(overall);
-    const results=[];
-    for(const retention of [.85,.9,.95]){
-      const schedulers=new Map<string,Scheduler>(),counts=Array<number>(days).fill(0);
-      let processed=0;
-      for(const row of rows){
-        if(++processed%256===0)await new Promise<void>(resolve=>setImmediate(resolve));
-        const deckId=String(row.folder_id),profile=profiles.resolve(deckId),key=profileKey(profile);
-        let scheduler=schedulers.get(key);
-        if(!scheduler){
-          scheduler=await StudyService.schedulerFor({...profile,desiredRetention:retention,enableShortTerm:false});
-          schedulers.set(key,scheduler);
-        }
-        let card=this.card(row),at=Math.max(now,Number(row.due_at));
-        const local=countsByFolder.get(deckId);
-        const ratings=local&&total(local)>=50?local:overall;
-        const ratingCount=total(ratings);
-        // Reuse each card's deterministic sequence in all retention scenarios.
-        let seed=2166136261;
-        for(const char of String(row.id))seed=Math.imul(seed^char.charCodeAt(0),16777619);
-        while(at<now+days*day){
-          counts[Math.floor((at-now)/day)]++;
-          seed=(Math.imul(seed,1664525)+1013904223)>>>0;
-          const pick=seed/4294967296*ratingCount;
-          const grade=!ratingCount?Rating.Good:pick<ratings[0]?Rating.Again:
-            pick<ratings[0]+ratings[1]?Rating.Hard:pick<ratingCount-ratings[3]?Rating.Good:Rating.Easy;
-          const next=scheduler.review({card,grade,now:new Date(at)}).card;
-          card=this.card({...row,state:JSON.stringify(next),due_at:next.dueAt.getTime()});
-          at=Math.max(at+day,card.dueAt.getTime());
-        }
-      }
-      results.push({retention,total:counts.reduce((sum,count)=>sum+count,0),peak:Math.max(...counts)});
-    }
-    return {days,cards:rows.length,historyCount,results};
-  }
+  readingStatistics(input:{folderId?:string;days?:number}={}){return readingStatistics(this.statsContext(),input);}
+  async simulateWorkload(folderId:string|null){return simulateWorkload(this.statsContext(),folderId);}
   private card(row:Row):DefaultSchedulerCard<'FSRS-7'>{
     if(!/^ts-fsrs\/6\.0\.0:FSRS-[67]$/.test(row.algorithm_version))throw Error(t('这张卡片的复习数据来自其他算法版本，需要迁移后使用。'));
     const state=JSON.parse(row.state);
+    // 2026-11-19：给 FSRS-7 需要的 stabilityFast 一个兜底（FSRS-6 卡片没有这个字段）
     const card={...state,stabilityFast:state.stabilityFast??state.stability,dueAt:new Date(state.dueAt),lastReviewAt:state.lastReviewAt?new Date(state.lastReviewAt):null};
     if(!Number.isFinite(card.dueAt.getTime())||(card.lastReviewAt&&!Number.isFinite(card.lastReviewAt.getTime())))throw Error(t('复习日期无效。'));
     return card as DefaultSchedulerCard<'FSRS-7'>;
   }
-  // ===== Anki 式每日上限（新卡 / 复习）=====
-  // 当天已做数取自 review_log：before.state 0=新卡、2=复习；撤销过的记录（undone_at）不算。
-  // 「学习/重学」（state 1/3）不占额度，与 Anki 一致。设置值 0 表示不限。
-  // 一天从 settings.dayStartHour 点开始（默认 4 点），review_log 统计与搁置的「次日」都按它算。
-  private static dayStartMs(now:number,hour:number):number{
-    const date=new Date(now);date.setHours(hour,0,0,0);
-    if(date.getTime()>now)date.setDate(date.getDate()-1);
-    return date.getTime();
+  // 每日额度相关逻辑见 ./quota.ts；这里只把 service 的依赖显式交出去（settings/profiles 是私有字段，不能直接传 this）
+  private quotaContext():QuotaContext{
+    return {repository:this.repository,settings:this.settings,profiles:this.profiles,now:()=>this.now(),active:()=>this.active()};
   }
-  private dailyUsage(folderId:string|null):{new:number;review:number}{
-    const start=StudyService.dayStartMs(this.now(),this.settings.dayStartHour);
-    // 每日上限可以按牌组设置，所以已做数也只统计这个牌组（含子牌组）的卡片。
-    const scope=folderId?deckScope(folderId):{filter:'',args:[] as any[]};
-    const row=this.repository.query(`SELECT
-      SUM(CASE WHEN json_extract(l.before_state,'$.state')=0 THEN 1 ELSE 0 END) AS newCount,
-      SUM(CASE WHEN json_extract(l.before_state,'$.state')=2 THEN 1 ELSE 0 END) AS reviewCount
-      FROM review_log l JOIN nodes n ON n.id=l.node_id
-      WHERE l.reviewed_at>=? AND l.undone_at IS NULL ${scope.filter}`).get(start,...scope.args) as {newCount:number|null;reviewCount:number|null}|undefined;
-    return {new:Number(row?.newCount||0),review:Number(row?.reviewCount||0)};
+  // 计数与「今天还能出多少」见 ./stats.ts；缓存（15 秒）留在 service，因为要跟 invalidate() 联动。
+  private statsContext():StatsContext{
+    return {repository:this.repository,profiles:this.profiles,settings:this.settings,now:()=>this.now(),
+      learnAheadMs:()=>this.learnAheadMs(),blockedJson:()=>this.blockedCards().json,
+      card:row=>this.card(row),schedulerForDeck:id=>this.schedulerForDeck(id),
+      prerequisites:id=>this.prerequisites(id),leechLapses:id=>this.leechLapses(id),
+      schedulerFor:settings=>StudyService.schedulerFor(settings)};
   }
-  private remainingToday(folderId:string|null):{new:number;review:number}{
-    const usage=this.dailyUsage(folderId),profile=this.profiles.resolve(folderId);
-    return {
-      new:profile.newPerDay>0?Math.max(0,profile.newPerDay-usage.new):Number.POSITIVE_INFINITY,
-      review:profile.reviewPerDay>0?Math.max(0,profile.reviewPerDay-usage.review):Number.POSITIVE_INFINITY,
-    };
+  private availableToday(folderId:string|null):DailySlots{
+    return availableToday(this.statsContext(),dailySlots(this.quotaContext()),this.statsCache!.direct,folderId);
   }
-  private candidates():string[]{
-    const session=this.active(),now=this.now(),at=new Date(now),blocked=this.blockedCards().json;
-    const scope=deckScope(session.folderId);
-    const remaining=this.remainingToday(session.folderId);
-    const reads=session.mode==='cards'?[]:this.repository.query(`WITH RECURSIVE absolute_priority(id) AS (
-      SELECT id FROM nodes WHERE priority=0 AND deleted_at IS NULL
-      UNION ALL
-      SELECT child.id FROM nodes child JOIN absolute_priority parent ON parent.id=child.parent_id
-      WHERE child.priority IS NULL AND child.deleted_at IS NULL
-    )
-      SELECT n.id,n.parent_id,n.priority,s.due_at,s.interval_ms FROM reading_state s JOIN nodes n ON n.id=s.node_id
-      LEFT JOIN review_cards review ON review.node_id=n.id
-      WHERE n.kind!='folder' AND(n.kind!='cloze' OR review.enabled=0) AND n.deleted_at IS NULL AND n.push_ready=1 AND s.enabled=1 AND s.due_at<=? AND ${unlocked}
-      ORDER BY n.id IN(SELECT id FROM absolute_priority) DESC,s.due_at,n.position,n.id LIMIT 500`).all(now,blocked);
-    const cards=session.mode==='reading'?[]:this.repository.query(`SELECT n.id,n.parent_id,n.folder_id,r.stage,r.state,r.algorithm_version FROM review_cards r JOIN nodes n ON n.id=r.node_id
-      WHERE n.kind='cloze' AND n.deleted_at IS NULL AND n.study_ready=1 AND r.enabled=1 AND r.due_at<=? AND ${unlocked} ${scope.filter}
-      ORDER BY CASE WHEN r.stage IN(1,3) THEN 0 WHEN r.stage=2 THEN 1 ELSE 2 END,r.due_at,n.position,n.id LIMIT 500`).all(now,blocked,...scope.args) as Row[];
-    // 按今天剩余额度裁剪新卡与复习卡；学习/重学（stage 1/3）始终保留在最前面
-    const limited=cards.filter(row=>{
-      if(Number(row.stage)===0){if(remaining.new<=0)return false;remaining.new-=1;return true;}
-      if(Number(row.stage)===2){if(remaining.review<=0)return false;remaining.review-=1;return true;}
-      return true;
-    });
-    const metadata=new Map<string,Row>([...reads,...cards].map(row=>[String(row.id),row]));
-    const pathFrom=(id:string)=>{
-      const chain:Row[]=[],seen=new Set<string>();let current:string|null=id;
-      while(current){
-        if(seen.has(current))throw Error(t('目录包含循环关系。'));seen.add(current);
-        let node=metadata.get(current);
-        if(!node){node=this.repository.query('SELECT id,parent_id,priority FROM nodes WHERE id=? AND deleted_at IS NULL').get(current) as Row|undefined;if(node)metadata.set(current,node);}
-        if(!node)break;chain.push(node);current=node.parent_id?String(node.parent_id):null;
-      }
-      return chain;
-    };
-    if(session.mode==='reading'){
-      const reading=reads.map(row=>{
-        const id=String(row.id),path=pathFrom(id),dueAt=new Date(Number(row.due_at)).toISOString();
-        const priority=resolveInheritedPushQueuePriority(path.map(node=>node.priority),this.settings.defaultPriority as any);
-        return {id,priority,pathNodeIds:path.reverse().map(node=>String(node.id)),nextAt:dueAt,dueAt,
-          intervalDurationMs:Number(row.interval_ms)};
-      });
-      return assembleReadingPushQueue(reading,{priorityRatio:this.settings.priorityRatio,
-        materialDispersion:{now:at.toISOString(),readingInitialIntervalMs:this.settings.readingInitialDays*86400000}}).map(row=>row.id);
-    }
-    const ordered=assembleFsrsPushQueue(limited.map(row=>{
-      const id=String(row.id),pathNodeIds=pathFrom(id).reverse().map(node=>String(node.id));
-      if(row.stage===0)return {id,pathNodeIds,priority:5 as const,retrievability:1};
-      if(row.stage===1||row.stage===3)return {id,pathNodeIds,priority:5 as const,retrievability:-1};
-      const scheduler=this.schedulerForDeck(String(row.folder_id)),card=this.card(row);
-      const elapsed=card.lastReviewAt?scheduler.chrono.difference(card.lastReviewAt,at):0;
-      return {id,pathNodeIds,priority:5 as const,retrievability:scheduler.model.forgettingCurve(card,elapsed)};
-    }),{priorityRatio:1,materialDispersion:{}}).map(row=>row.id);
-    // 展示顺序（对应 Anki 牌组选项的「展示顺序」）。
-    //   新学/复习的先后：mixed=学新与复习混合（默认）、newFirst=新卡先出、reviewFirst=复习先出；
-    //   新卡插入位置：position=顺序插入（旧卡片在前，默认）、random=随机；
-    //   复习排列顺序：forgetting=最容易忘的先（默认）、due=按到期日期、random=随机。
-    // 学习/重学永远排最前，组内顺序沿用上面的遗忘程度/位置排序。
-    const stages=new Map(limited.map(row=>[String(row.id),Number(row.stage)]));
-    const dueAt=new Map(limited.map(row=>[String(row.id),Number(row.due_at)]));
-    const groups:{learning:string[];review:string[];fresh:string[]}={learning:[],review:[],fresh:[]};
-    for(const id of ordered){const stage=stages.get(id);(stage===0?groups.fresh:stage===2?groups.review:groups.learning).push(id);}
-    if(this.settings.newOrder==='random')groups.fresh=StudyService.shuffle(groups.fresh);
-    if(this.settings.reviewOrder==='due')groups.review.sort((a,b)=>(dueAt.get(a)||0)-(dueAt.get(b)||0));
-    else if(this.settings.reviewOrder==='random')groups.review=StudyService.shuffle(groups.review);
-    const order=this.settings.newReviewOrder||'mixed';
-    if(order==='newFirst')return [...groups.learning,...groups.fresh,...groups.review];
-    if(order==='reviewFirst')return [...groups.learning,...groups.review,...groups.fresh];
-    return [...groups.learning,...StudyService.interleave(groups.review,groups.fresh)];
+  // 候选与排序见 ./queue.ts（buildQueue）；这里只把 service 依赖显式交出去。
+  private queueContext():QueueContext{
+    return {...this.quotaContext(),blockedJson:()=>this.blockedCards().json,card:row=>this.card(row),deckScheduler:id=>this.schedulerForDeck(id)};
   }
-  private static shuffle<T>(items:T[]):T[]{
-    const copy=[...items];
-    for(let i=copy.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[copy[i],copy[j]]=[copy[j],copy[i]];}
-    return copy;
-  }
-  /** 学新与复习混合：把新卡均匀插进复习队列（Anki 的 New/review order = 混合）。 */
-  private static interleave<T>(review:T[],fresh:T[]):T[]{
-    const result:T[]=[],pending=[...fresh];
-    if(!pending.length)return [...review];
-    if(!review.length)return pending;
-    const step=review.length/pending.length;
-    let next=step;
-    for(let index=0;index<review.length;index++){
-      while(next<=index+1&&pending.length){result.push(pending.shift()!);next+=step;}
-      result.push(review[index]);
-    }
-    while(pending.length)result.push(pending.shift()!);
-    return result;
-  }
-  private next(){
+  private candidates():string[]{return buildQueue(this.queueContext());}
+  /** 2026-11-18：学习提前限制（分钟，0 = 关闭）。 */
+  /** 2026-11-19：最近一张答过的卡，用于「提前卡不要立刻重复同一张」。 */
+  private lastGraded:{id:string;at:number}|null=null;
+  private learnAheadMs(){
+    const minutes=Number(this.settings.learnAheadMinutes??20);
+    return Number.isFinite(minutes)&&minutes>0?minutes*60000:0;
+  }  private next(){
     const session=this.active(),blocked=this.blockedCards();session.current=null;
     if(session.mode!=='reading'){
       const scope=deckScope(session.folderId);
-      const urgent=this.repository.query(`SELECT r.node_id FROM review_cards r JOIN nodes n ON n.id=r.node_id
+      const urgent=this.repository.query(`SELECT r.node_id,r.day_learning FROM review_cards r JOIN nodes n ON n.id=r.node_id
         WHERE n.kind='cloze' AND n.deleted_at IS NULL AND n.study_ready=1 AND r.enabled=1 AND r.stage IN(1,3)
-          AND r.due_at<=? AND ${unlocked} ${scope.filter} ORDER BY r.due_at LIMIT 1`).get(this.now(),blocked.json,...scope.args);
+          AND r.due_at<=? AND ${unlocked} ${scope.filter}
+          ORDER BY (COALESCE(json_extract(r.state,'$.reps'),0)=0), r.due_at, r.learning_step, r.node_id LIMIT 1`).get(this.now(),blocked.json,...scope.args);
       if(urgent){session.current=String(urgent.node_id);session.token=randomUUID();session.shownAt=this.now();return;}
     }
-    for(let pass=0;pass<2;pass++){
+    const slots=dailySlots(this.quotaContext());
+    queuePasses:for(let pass=0;pass<2;pass++){
       if(!session.queue.length){
         session.queue=this.candidates();
-        if(!session.queue.length)return;
+        if(!session.queue.length)break queuePasses;
       }
       while(session.queue.length){
         const id=session.queue.shift()!,node=this.repository.getNode(id),row=node?this.stateRow(node):null;
         const ready=node?this.ready(id):0;
-        if(node&&this.matchesMode(node)&&ready&&row?.enabled&&!blocked.ids.has(id)&&Number(row.due_at)<=this.now()){
+        if(node&&this.matchesMode(node)&&ready&&row?.enabled&&!blocked.ids.has(id)&&
+          Number(row.due_at)<=this.now()&&hasDailyQuota(this.quotaContext(),node.folderId,row.stage,slots,Number(row.due_at),Number(row.day_learning||0))){
           session.current=id;session.token=randomUUID();session.shownAt=this.now();return;
         }
       }
     }
+    // 2026-11-18：照 Anki 的三段顺序——到点的学习卡 → 主队列（复习/跨日学习/新卡）→ 提前量内的学习卡。
+    // 提前的卡排最后，不会插队打断正在进行的复习。
+    if(session.mode!=='reading'&&this.learnAheadMs()>0){
+      const scope=deckScope(session.folderId);
+      const aheadRows=this.repository.query(`SELECT r.node_id FROM review_cards r JOIN nodes n ON n.id=r.node_id
+        WHERE n.kind='cloze' AND n.deleted_at IS NULL AND n.study_ready=1 AND r.enabled=1 AND r.stage IN(1,3)
+          AND r.due_at<=? AND COALESCE(r.buried_until,0)<=? AND ${unlocked} ${scope.filter} ORDER BY r.due_at LIMIT 2`).all(this.now()+this.learnAheadMs(),this.now(),blocked.json,...scope.args) as Row[];
+      // 优先给不是「刚答过」的那张，实在只有它就照给（此时队列已经空了）
+      const ahead=aheadRows.find(row=>String(row.node_id)!==this.lastGraded?.id)??aheadRows[0];
+      if(ahead){session.current=String(ahead.node_id);session.token=randomUUID();session.shownAt=this.now();return;}
+    }
   }
   snapshot():StudySnapshot {
+    this.cleanupBuriedTags(this.now());
     const session=this.active(),blocked=this.blockedCards();
     const scope=deckScope(session.folderId);
     let item:StudyItem|null=null;
@@ -784,10 +611,14 @@ export class StudyService {
       const node=this.repository.getNode(session.current),row=node?this.stateRow(node):null;
       if(node&&row&&(!session.folderId||this.matchesMode(node))){
         const isReview=session.mode==='cards',now=this.now();const preview=isReview?[...this.schedulerForDeck(node.folderId).preview({card:this.card(row),now:new Date(now)})]
-          .map(result=>({rating:result.grade as 1|2|3|4,dueAt:result.card.dueAt.getTime()})):[];
+          .map(result=>({rating:result.grade as 1|2|3|4,
+            // 2026-11-19（D3）：复习的预览也要按天对齐，否则和写库后的到期日差几个小时。
+            dueAt:result.card.state===2?dayStartMs(result.card.dueAt.getTime(),this.settings.dayStartHour):result.card.dueAt.getTime(),
+            // 2026-11-19：复习卡按 Anki 的口径显示「整数天」，不再显示「距现在 1.8 天」这种经过时间。
+            ...(result.card.state===2?{days:Math.max(1,Math.round(Number(result.card.scheduledDays)||0))}:{})})):[];
         item={id:node.id,token:session.token,kind:isReview?'fsrs':'reading',isTest:node.kind==='cloze',title:node.title,
           state:isReview?(row.stage===0?'new':row.stage===2?'review':'learning'):row.reps===0?'new':'review',
-          priority:this.priority(node.id),revision:row.revision,preview,...(!isReview?{pushPreview:{read:this.pushSchedule(node.id,row,'read',now).dueAt,later:this.pushSchedule(node.id,row,'later',now).dueAt}}:{})};
+          priority:this.priority(node.id),revision:row.revision,preview,...(!isReview?{pushPreview:{read:pushSchedule(this.pushContext(),node.id,row,'read',now).dueAt,later:pushSchedule(this.pushContext(),node.id,row,'later',now).dueAt}}:{})};
       }
     }
     const next=this.repository.query(`SELECT MIN(r.due_at) due_at FROM ${session.mode==='cards'?'review_cards':'reading_state'} r JOIN nodes n ON n.id=r.node_id
@@ -798,8 +629,8 @@ export class StudyService {
     const counts=session.folderId?byFolder[session.folderId]??{new:0,learning:0,review:0,readingDue:0}:this.statsCache!.total;
     // 复习条上的新卡/复习数字按「今天还剩多少额度」显示，与队列实际会出的卡一致；
     // 侧栏的 folderCounts 仍然是积压总数，不受上限影响。
-    const remaining=session.mode==='cards'?this.remainingToday(session.folderId):null;
-    const shown=remaining?{...counts,new:Math.min(counts.new,remaining.new),review:Math.min(counts.review,remaining.review)}:counts;
+    const available=this.availableToday(session.folderId);
+    const shown=session.mode==='cards'?{...counts,new:available.new,review:available.review}:{...counts,readingDue:available.reading};
     const folderTitle=session.folderId?this.profiles.folders.get(session.folderId)?.title??t('牌组'):session.mode==='cards'?t('全部牌组'):t('全部待办');
     return {sessionId:session.id,folderId:session.folderId,folderTitle,mode:session.mode,item,completed:session.completed,
       canUndo:session.history.length>0,nextDueAt:next?.due_at?Number(next.due_at):null,postponed:session.postponed,
@@ -890,7 +721,7 @@ export class StudyService {
   private buryRelated(node:Material,now:number):Array<{id:string;revision:number;dueAt:number;buriedAt:number}>{
     const profile=this.profiles.resolve(node.folderId);
     if(!profile.buryNew&&!profile.buryReview&&!profile.buryLearning)return [];
-    const tomorrow=StudyService.dayStartMs(now,this.settings.dayStartHour)+24*3600000;const limit=tomorrow;
+    const tomorrow=dayStartMs(now,this.settings.dayStartHour)+24*3600000;const limit=tomorrow;
     // 单向——子卡片被搁置会影响父卡片，父卡片被搁置不影响子卡片；
     // 所以复习一张卡时只把它的记忆树「父卡」按开关搁置到次日，不再往下波及子卡。
     const rows=this.repository.query(`SELECT r.node_id AS id,r.stage,r.due_at AS dueAt,r.revision
@@ -911,46 +742,106 @@ export class StudyService {
     }
     return buried;
   }
-  private applyFsrsGrade(node:Material,before:Row,rating:1|2|3|4,now:number,eventId:string,details:Record<string,unknown>){
-    const profile=this.profiles.resolve(node.folderId);
-    const card=this.card(before),lapsesBefore=card.lapses;
-    const result=this.schedulerForDeck(node.folderId).review({card,grade:rating,now:new Date(now)});
-    const version='ts-fsrs/6.0.0:'+(profile.fsrsVersion||'FSRS-7'),state=JSON.stringify(result.card);
-    this.repository.query('UPDATE review_cards SET state=?,due_at=?,stage=?,revision=revision+1,algorithm_version=?,updated_at=? WHERE node_id=?')
-      .run(state,result.card.dueAt.getTime(),result.card.state,version,now,node.id);
-    const lapses=result.card.lapses,threshold=profile.leechThreshold;
-    let leechEffect;
-    if(rating===Rating.Again&&lapses>lapsesBefore&&threshold>0&&lapses>=threshold&&(lapses-threshold)%Math.ceil(threshold/2)===0){
-      const previous=readSchedule(this.repository,node.id)!;
-      this.repository.query("INSERT OR IGNORE INTO node_tags(node_id,tag) VALUES(?,'leech')").run(node.id);
-      if(profile.leechAction==='suspend'){
-        this.repository.query('UPDATE review_cards SET enabled=0 WHERE node_id=?').run(node.id);
-        this.repository.query('UPDATE reading_state SET enabled=1,due_at=MIN(due_at,?),revision=revision+1 WHERE node_id=?').run(now,node.id);
-      }
-      const after=readSchedule(this.repository,node.id)!;
-      leechEffect={previous:{tag:previous.leech,reviewEnabled:previous.review!.enabled,pushEnabled:previous.reading.enabled,pushDueAt:previous.reading.due_at},
-        after:{tag:after.leech,reviewEnabled:after.review!.enabled,pushEnabled:after.reading.enabled,pushDueAt:after.reading.due_at}};
+  // ===== 2026-11-19：复习间隔 fuzz + 负载均衡（对齐 anki main：states/fuzz.rs、states/load_balancer.rs）=====
+  // fuzz 区间：间隔 <2.5 天不 fuzz；否则 delta = 1 + 0.15·(min(i,7)−2.5)⁺ + 0.10·(min(i,20)−7)⁺ + 0.05·(i−20)⁺。
+  /** fuzz.rs::constrained_fuzz_bounds——夹到 [minimum,maximum]，并保证上下界不等（除非 maximum 不允许）。 */
+  private static constrainedFuzzBounds(interval:number,minimum:number,maximum:number):[number,number]{return constrainedFuzzBounds(interval,minimum,maximum);}
+  /** 未来每天到期数，按「预设」（deck config）分组——对齐 Anki 的 days_by_preset。 */
+  private loadBalanceCounts(now:number):{dayStart:number;counts:Map<string,Map<number,number>>}{
+    if(this.loadBalanceCache)return this.loadBalanceCache;
+    const dayStart=dayStartMs(now,this.settings.dayStartHour);
+    const counts=new Map<string,Map<number,number>>();
+    const rows=this.repository.query(`SELECT n.folder_id AS folderId,CAST((r.due_at-?)/86400000 AS INTEGER) AS day,count(*) AS count
+      FROM review_cards r JOIN nodes n ON n.id=r.node_id
+      WHERE r.stage=2 AND r.enabled=1 AND n.deleted_at IS NULL AND r.due_at>=? AND r.due_at<?
+      GROUP BY n.folder_id,day`).all(dayStart,dayStart,dayStart+100*86400000) as Row[];
+    for(const row of rows){
+      const key=this.presetKeyFor(row.folderId?String(row.folderId):null),day=Number(row.day);
+      let bucket=counts.get(key);if(!bucket)counts.set(key,bucket=new Map());
+      bucket.set(day,(bucket.get(day)||0)+Number(row.count));
     }
-    this.repository.query('INSERT INTO review_log(event_id,node_id,reviewed_at,rating,algorithm_version,before_state,after_state,details) VALUES(?,?,?,?,?,?,?,?)')
-      .run(eventId,node.id,now,rating,version,before.state,state,JSON.stringify({revlog:result.revlog,settings:profile,deckId:node.folderId,...details,leechEffect}));
+    this.loadBalanceCache={dayStart,counts};
+    return this.loadBalanceCache;
+  }
+  private presetKeyFor(folderId:string|null):string{return profileKey(this.profiles.resolve(folderId));}
+  /** 让缓存跟着同一次事务里的写入走（撤销/改期由 invalidate() 统一清空）。 */
+  private loadBalanceAdjust(presetKey:string,stage:unknown,enabled:unknown,dueAt:unknown,delta:number){
+    const cache=this.loadBalanceCache;if(!cache)return;
+    if(Number(stage)!==2||!Number(enabled))return;
+    const at=Number(dueAt);if(!Number.isFinite(at))return;
+    const day=Math.floor((at-cache.dayStart)/86400000);
+    if(day<0||day>=100)return;
+    let bucket=cache.counts.get(presetKey);if(!bucket)cache.counts.set(presetKey,bucket=new Map());
+    const next=(bucket.get(day)||0)+delta;
+    if(next>0)bucket.set(day,next);else bucket.delete(day);
+  }
+  /** 与学习步抖动一致的确定性随机（FNV-1a + mulberry32 一步），同样输入得到同样结果，测试可复现。 */
+  private static stableRandom(seed:string):number{return stableRandom(seed);}
+  /**
+   * 复习卡的下次间隔（天）：fuzz.rs::with_review_fuzz 的等价实现。
+   * 有负载均衡上下文时优先用它挑天，否则在 fuzz 区间里按卡片确定的随机因子取一天。
+   * 关闭 `reviewFuzz`（只在测试里）时直接返回四舍五入后的间隔。
+   */
+  private reviewIntervalDays(node:Material,dueAt:number,raw:number,minimum:number,maximum:number,now:number,reps:number):number{
+    const ideal=Math.min(maximum,Math.max(minimum,Math.round(raw)));
+    const [lower,upper]=StudyService.constrainedFuzzBounds(raw,minimum,maximum);
+    // Anki 里负载均衡优先于 fuzz：有负载均衡上下文就挑天，否则才用 fuzz 因子。
+    const balanced=this.balancedInterval(node,dueAt,lower,upper,now,reps,Math.round(raw));
+    if(balanced!==null)return balanced;
+    if(this.settings.reviewFuzz===false)return ideal;
+    const factor=StudyService.stableRandom(String(node.id)+'|'+String(reps));
+    return lower+Math.floor(factor*(1+upper-lower));
+  }
+  /**
+   * load_balancer.rs::find_interval——在 fuzz 窗口内按 w = (1/n)^2.15 · (1/target_interval)^3 加权随机；
+   * 0 张到期时权重 1；间隔 >90 天或窗口下界 >90 天不参与。
+   */
+  private balancedInterval(node:Material,dueAt:number,lower:number,upper:number,now:number,reps:number,ideal:number):number|null{
+    if(this.settings.loadBalance!==true)return null;
+    if(ideal>90||lower>90)return null;
+    if(upper<=lower)return null;
+    const {dayStart,counts}=this.loadBalanceCounts(now);
+    const perDay=counts.get(this.presetKeyFor(node.folderId));
+    const baseDay=Math.floor((dueAt-dayStart)/86400000);
+    const candidates:{offset:number;weight:number}[]=[];let total=0;
+    for(let offset=lower;offset<=upper;offset++){
+      const due=perDay?.get(baseDay+offset-ideal)||0;
+      const weight=due===0?1:Math.pow(1/due,2.15)*Math.pow(1/Math.max(1,offset),3);
+      candidates.push({offset,weight});total+=weight;
+    }
+    let pick=StudyService.stableRandom(String(node.id)+'|'+String(reps)+'|'+String(baseDay))*total;
+    for(const candidate of candidates){pick-=candidate.weight;if(pick<=0)return candidate.offset;}
+    return candidates[candidates.length-1]!.offset;
+  }
+  // 评价写库见 ./grade.ts（applyFsrsGrade）；这里只把 service 依赖显式交出去。
+  private gradeContext():GradeContext{
+    return {repository:this.repository,settings:this.settings,profiles:this.profiles,
+      card:row=>this.card(row),schedulerForDeck:id=>this.schedulerForDeck(id),
+      reviewIntervalDays:(node,dueAt,raw,minimum,maximum,now,reps)=>this.reviewIntervalDays(node,dueAt,raw,minimum,maximum,now,reps),
+      loadBalanceAdjust:(presetKey,stage,enabled,dueAt,delta)=>this.loadBalanceAdjust(presetKey,stage,enabled,dueAt,delta)};
+  }
+  private applyFsrsGrade(node:Material,before:Row,rating:1|2|3|4,now:number,eventId:string,details:Record<string,unknown>){
+    applyFsrsGrade(this.gradeContext(),{node,before,rating,now,eventId,details});
   }
   grade(input:Submission&{rating?:1|2|3|4;action?:'read'|'later'|'soon'|'dismiss';position?:number;againChildren?:AgainChildSelection[]}):StudySnapshot {
     const session=this.active();if(session.id!==input.sessionId)throw Error(t('复习会话已改变。'));
     if(session.submitted.has(input.token))return this.snapshot();
     const {node,before}=this.currentSubmission(session,input);
+    if(!hasDailyQuota(this.quotaContext(),node.folderId,before.stage))throw Error(t('已达到此牌组的每日上限，请刷新队列。'));
     const now=this.now(),kind=session.mode==='cards'?'fsrs':'reading',eventId=input.token;
     if(input.againChildren!==undefined&&(kind!=='fsrs'||input.rating!==Rating.Again||!Array.isArray(input.againChildren)))
       throw Error(t('请在父卡的重来操作中选择子卡。'));
     this.repository.transaction(()=>{
       const children=this.checkedAgainChildren(node.id,input.againChildren??[]);
-      // 阅读点随评分一起写入，避免额外递增 reading_state.revision。
+      // 阅读点随评价一起写入，避免额外递增 reading_state.revision。
       if(Number.isFinite(Number(input.position)))
         this.repository.query('UPDATE reading_state SET reading_position=? WHERE node_id=?')
           .run(Math.min(1e8,Math.max(0,Math.floor(Number(input.position)))),node.id);
       const beforeOperation=this.operationState(node.id,before);
       if(kind==='fsrs'){
-        if(![1,2,3,4].includes(Number(input.rating)))throw Error(t('评分无效。'));
+        if(![1,2,3,4].includes(Number(input.rating)))throw Error(t('评价无效。'));
         this.applyFsrsGrade(node,before,input.rating!,now,eventId,{durationMs:Math.max(0,Math.min(600000,now-session.shownAt))});
+      this.lastGraded={id:node.id,at:now};
         for(const child of children){
           const childEvent=randomUUID(),previous=this.operationState(child.node.id,child.before);
           this.applyFsrsGrade(child.node,child.before,Rating.Again,now,childEvent,{source:'selected_child_again',parentEventId:eventId});
@@ -964,23 +855,8 @@ export class StudyService {
         const buried=this.buryRelated(node,now);
         if(buried.length)(beforeOperation as any)._buried=buried;
       }else{
-        // Foliole 四动作。soon（本轮再出）不写任何状态：间隔/次数/due 都不动，
-        // 只在本轮队列末尾再排一次（foliole 的 soon cohort 语义）；不记日志、不进撤销栈。
-        if(!['read','later','soon','dismiss'].includes(input.action||''))throw Error(t('阅读操作无效。'));
-        const action=input.action as 'read'|'later'|'soon'|'dismiss';
-        if(action!=='soon'){
-          const schedule=action==='dismiss'
-            ?{dueAt:before.due_at,interval:before.interval_ms,reps:before.reps}
-            :this.pushSchedule(node.id,before,action,now);
-          this.repository.query('UPDATE reading_state SET due_at=?,interval_ms=?,reps=?,last_read_at=?,enabled=?,revision=revision+1 WHERE node_id=?')
-            .run(schedule.dueAt,schedule.interval,schedule.reps,now,action==='dismiss'?0:1,node.id);
-          const after=this.stateRow(node)!;
-          this.repository.query('INSERT INTO reading_log(event_id,node_id,reviewed_at,action,before_state,after_state) VALUES(?,?,?,?,?,?)')
-            .run(eventId,node.id,now,input.action!,JSON.stringify(before),JSON.stringify(after));
-          const tagsBefore=readSchedule(this.repository,node.id)!;
-          this.repository.query("DELETE FROM node_tags WHERE node_id=? AND tag='buried'").run(node.id);
-          recordTagChange(this.repository,node.id,now,tagsBefore,readSchedule(this.repository,node.id)!);
-        }
+        // Foliole 四动作的写库见 ./reading/actions.ts（soon 不写状态，由下面的队列逻辑处理）。
+        applyReadingAction(this.pushContext(),{node,before,action:input.action as ReadingAction,eventId,now});
       }
       if(input.action!=='soon')this.logOperation(node.id,eventId,session.id,kind,now,beforeOperation,this.stateRow(node)!);
     });
@@ -989,65 +865,32 @@ export class StudyService {
     else{session.history.push(eventId);session.completed++;}
     this.invalidate();this.next();return this.snapshot();
   }
-  private restoreOperation(event:Row,now:number):void{
-    const node=this.repository.getNode(String(event.node_id));
-    if(!node)throw Error(t('这张卡片已删除。'));
-    const fsrs=event.kind==='fsrs';
-    const table=fsrs?'review_cards':'reading_state';
-    const before=JSON.parse(event.before_state),after=JSON.parse(event.after_state);
-    const current=this.repository.query(`SELECT * FROM ${table} WHERE node_id=?`).get(node.id);
-    if(!current||node.kind==='folder'||(fsrs&&node.kind!=='cloze')||
-      (!fsrs&&node.kind==='cloze'&&this.repository.query('SELECT enabled FROM review_cards WHERE node_id=?').get(node.id)?.enabled))
-      throw Error(t('卡片类型或推送方式已改变，无法撤销此次复习。'));
-    if(event.kind==='fsrs'&&after._push){
-      const push=this.repository.query('SELECT * FROM reading_state WHERE node_id=?').get(node.id);
-      // 另一次撤销可能恢复了相同的推送内容，但版本号仍须递增。
-      if(!push||Object.keys(after._push).some(key=>key!=='revision'&&push[key]!==after._push[key]))
-        throw Error(t('推送状态之后已改变，无法撤销此次复习。'));
-    }
-    const keys=event.kind==='fsrs'?['state','due_at','enabled','stage']:['due_at','interval_ms','reps','last_read_at','enabled'];
-    if(keys.some(key=>current[key]!==after[key]))throw Error(t('这张卡片之后又修改了排程，无法撤销。'));
-    const previousSchedule=readSchedule(this.repository,node.id)!;
-    if(event.kind==='fsrs'&&before._leech!==undefined){
-      if(!before._leech)this.repository.query("DELETE FROM node_tags WHERE node_id=? AND tag='leech'").run(node.id);
-      if(before._push)this.repository.query('UPDATE reading_state SET enabled=?,due_at=?,revision=revision+1 WHERE node_id=? AND (enabled!=? OR due_at!=?)')
-        .run(before._push.enabled,before._push.due_at,node.id,before._push.enabled,before._push.due_at);
-    }
-    if(fsrs)this.repository.query('UPDATE review_cards SET state=?,due_at=?,stage=?,enabled=?,algorithm_version=?,revision=revision+1,updated_at=? WHERE node_id=?')
-      .run(before.state,before.due_at,before.stage,before.enabled,before.algorithm_version,now,node.id);
-    else this.repository.query('UPDATE reading_state SET due_at=?,interval_ms=?,reps=?,last_read_at=?,enabled=?,revision=revision+1 WHERE node_id=?')
-      .run(before.due_at,before.interval_ms,before.reps,before.last_read_at,before.enabled,node.id);
-    // 这次复习一并搁置的关联卡片，撤销时放回原来的到期日（期间被人改过就跳过）
-    const buried=(before as any)._buried as Array<{id:string;dueAt:number;buriedAt:number}>|undefined;
-    if(fsrs&&buried?.length)for(const entry of buried){
-      const row=this.repository.query('SELECT due_at FROM review_cards WHERE node_id=?').get(entry.id);
-      if(!row||Number(row.due_at)!==entry.buriedAt)continue;
-      const previousSchedule=readSchedule(this.repository,entry.id);
-      this.repository.query('UPDATE review_cards SET due_at=?,revision=revision+1,updated_at=? WHERE node_id=?').run(entry.dueAt,now,entry.id);
-      const restored=readSchedule(this.repository,entry.id);
-      if(previousSchedule&&restored)recordStudyChange(this.repository,entry.id,now,previousSchedule,restored,
-        {id:'unbury-'+String(event.event_id)+'-'+entry.id,kind:'fsrs',at:now});
-    }
-    this.repository.query('UPDATE study_operations SET undone_at=? WHERE event_id=?').run(now,event.event_id);
-    this.repository.query(`UPDATE ${fsrs?'review_log':'reading_log'} SET undone_at=? WHERE event_id=?`).run(now,event.event_id);
-    recordStudyChange(this.repository,node.id,now,previousSchedule,readSchedule(this.repository,node.id)!,
-      {id:String(event.event_id),kind:fsrs?'fsrs':'reading',at:now});
+  /** 2026-11-19：撤销「置于末尾」——把卡片从队尾拿回来，重新作为当前卡片。
+   *  「置于末尾」只改本轮队列顺序、不写日志，所以在会话里就地回滚。 */
+  unqueue(id:string):StudySnapshot {
+    const session=this.active();
+    if(session.mode!=='reading')throw Error(t('当前不是待办。'));
+    const displaced=session.current;
+    session.queue=session.queue.filter(queued=>queued!==id);
+    // 被顶掉的那张放回队首，否则撤销后队列就空了
+    if(displaced&&displaced!==id)session.queue.unshift(displaced);
+    session.current=id;
+    session.submitted.delete(session.token);
+    this.invalidate();return this.snapshot();
   }
   undo():StudySnapshot;
   undo(eventId:string):StudySnapshot|null;
   undo(requestedId?:string):StudySnapshot|null {
     const session=this.session,requested=requestedId??this.active().history.at(-1);
     if(!requested)throw Error(t('没有可撤销的复习。'));
-    const find=this.repository.query("SELECT * FROM study_operations WHERE event_id=? AND undone_at IS NULL AND kind IN ('fsrs','reading')");
-    let event=find.get(requested) as Row|undefined;
-    if(event&&String(event.session_id).startsWith(againChildBatch))event=find.get(String(event.session_id).slice(againChildBatch.length)) as Row|undefined;
+    const event=findUndoableOperation(this.repository,requested);
     if(!event)throw Error(t('没有可撤销的复习。'));
-    const operation=event,eventId=String(event.event_id),nodeId=String(event.node_id),now=this.now();
+    const eventId=String(event.event_id),nodeId=String(event.node_id),now=this.now();
     this.repository.transaction(()=>{
-      const children=this.repository.query('SELECT * FROM study_operations WHERE session_id=?').all(againChildBatch+eventId) as Row[];
+      const children=childOperations(this.repository,eventId);
       if(children.some(child=>child.undone_at!==null))throw Error(t('这批重来已被部分撤销。'));
-      this.restoreOperation(operation,now);
-      for(const child of children)this.restoreOperation(child,now);
+      restoreOperation(this.repository,event,now);
+      for(const child of children)restoreOperation(this.repository,child,now);
     });
     this.invalidate();
     if(!session)return null;
